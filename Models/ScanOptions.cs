@@ -14,4 +14,7 @@ public sealed class ScanOptions
     public long LargeFileThresholdBytes { get; init; } = 512L * 1024 * 1024;
     public bool FollowReparsePoints { get; init; }
     public bool RecordSkipped { get; init; }
+    public bool AllFiles { get; init; }
+    public HashSet<string> IncludeExtensions { get; init; } = new(StringComparer.OrdinalIgnoreCase);
+    public HashSet<string> ExcludeExtensions { get; init; } = new(StringComparer.OrdinalIgnoreCase);
 }
