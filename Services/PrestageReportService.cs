@@ -451,11 +451,17 @@ ORDER BY path;";
     function initializeState() {
       for (const group of reportData.groups) {
         const staged = new Set();
-        group.files.forEach((_, index) => {
-          if (index !== 0) staged.add(index);
-        });
-        state.set(group.group_number, { keepIndex: 0, staged, expanded: true });
+        const groupState = { keepIndex: 0, staged, expanded: true };
+        stageAllExceptKeep(group, groupState, 0);
+        state.set(group.group_number, groupState);
       }
+    }
+
+    function stageAllExceptKeep(group, groupState, keepIndex) {
+      groupState.staged.clear();
+      group.files.forEach((_, candidateIndex) => {
+        if (candidateIndex !== keepIndex) groupState.staged.add(candidateIndex);
+      });
     }
 
     function updateSummary() {
@@ -592,7 +598,7 @@ ORDER BY path;";
       keep.checked = index === groupState.keepIndex;
       keep.addEventListener('change', () => {
         groupState.keepIndex = index;
-        groupState.staged.delete(index);
+        stageAllExceptKeep(group, groupState, index);
         renderGroups();
       });
       keepCell.appendChild(keep);
@@ -640,10 +646,7 @@ ORDER BY path;";
     function selectAllNonKeep() {
       for (const group of reportData.groups) {
         const groupState = state.get(group.group_number);
-        groupState.staged.clear();
-        group.files.forEach((_, index) => {
-          if (index !== groupState.keepIndex) groupState.staged.add(index);
-        });
+        stageAllExceptKeep(group, groupState, groupState.keepIndex);
       }
       renderGroups();
     }
