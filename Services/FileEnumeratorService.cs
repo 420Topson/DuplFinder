@@ -36,21 +36,28 @@ public sealed class FileEnumeratorService
                     continue;
                 }
 
-                IEnumerable<FileSystemInfo> entries;
-                try
-                {
-                    entries = current.EnumerateFileSystemInfos();
-                }
-                catch (Exception ex) when (ex is UnauthorizedAccessException or IOException or PathTooLongException or DirectoryNotFoundException)
-                {
-                    progress.Error();
-                    await results.WriteAsync(FileHashResult.FromSkipped(current.FullName, ex.GetType().Name + ": " + ex.Message), ct);
+                using var entries = await TryEnumerateAsync(current, results, progress, ct);
+                if (entries is null)
                     continue;
-                }
 
-                foreach (var entry in entries)
+                while (true)
                 {
                     ct.ThrowIfCancellationRequested();
+
+                    FileSystemInfo entry;
+                    try
+                    {
+                        if (!entries.MoveNext())
+                            break;
+
+                        entry = entries.Current;
+                    }
+                    catch (Exception ex) when (IsEnumerationException(ex))
+                    {
+                        progress.Error();
+                        await results.WriteAsync(FileHashResult.FromSkipped(current.FullName, ex.GetType().Name + ": " + ex.Message), ct);
+                        break;
+                    }
 
                     try
                     {
@@ -88,7 +95,7 @@ public sealed class FileEnumeratorService
                             await candidates.WriteAsync(candidate, ct);
                         }
                     }
-                    catch (Exception ex) when (ex is UnauthorizedAccessException or IOException or PathTooLongException or FileNotFoundException or DirectoryNotFoundException)
+                    catch (Exception ex) when (IsEnumerationException(ex) || ex is FileNotFoundException)
                     {
                         progress.Error();
                         await results.WriteAsync(FileHashResult.FromSkipped(entry.FullName, ex.GetType().Name + ": " + ex.Message), ct);
@@ -100,6 +107,29 @@ public sealed class FileEnumeratorService
         {
             candidates.TryComplete();
         }
+    }
+
+    private static async Task<IEnumerator<FileSystemInfo>?> TryEnumerateAsync(
+        DirectoryInfo directory,
+        ChannelWriter<FileHashResult> results,
+        ConsoleProgress progress,
+        CancellationToken ct)
+    {
+        try
+        {
+            return directory.EnumerateFileSystemInfos().GetEnumerator();
+        }
+        catch (Exception ex) when (IsEnumerationException(ex))
+        {
+            progress.Error();
+            await results.WriteAsync(FileHashResult.FromSkipped(directory.FullName, ex.GetType().Name + ": " + ex.Message), ct);
+            return null;
+        }
+    }
+
+    private static bool IsEnumerationException(Exception ex)
+    {
+        return ex is UnauthorizedAccessException or IOException or PathTooLongException or DirectoryNotFoundException;
     }
 
     private static string NormalizeRoot(string root)
