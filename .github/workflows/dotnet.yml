@@ -1,0 +1,65 @@
+name: .NET CI - build, smoke test, publish
+
+on:
+  push:
+    branches: [ main, master ]
+  pull_request:
+    branches: [ main, master ]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  DOTNET_VERSION: '8.0.x'
+  PROJECT_PATH: './DuplicateFinder.csproj'
+  PUBLISH_DIR: './publish/win-x64'
+
+jobs:
+  build-smoke-test-publish:
+    name: Build, smoke test and publish single EXE
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+
+      - name: Setup .NET SDK
+        uses: actions/setup-dotnet@v5
+        with:
+          dotnet-version: ${{ env.DOTNET_VERSION }}
+
+      - name: Show .NET info
+        shell: pwsh
+        run: dotnet --info
+
+      - name: Restore
+        shell: pwsh
+        run: dotnet restore $env:PROJECT_PATH
+
+      - name: Build Release
+        shell: pwsh
+        run: dotnet build $env:PROJECT_PATH -c Release --no-restore
+
+      - name: Smoke test CLI on Windows
+        shell: pwsh
+        run: ./scripts/smoke-test.ps1 -ProjectPath $env:PROJECT_PATH
+
+      - name: Publish single self-contained EXE
+        shell: pwsh
+        run: |
+          dotnet publish $env:PROJECT_PATH `
+            -c Release `
+            -r win-x64 `
+            --self-contained true `
+            /p:PublishSingleFile=true `
+            /p:EnableCompressionInSingleFile=true `
+            /p:IncludeNativeLibrariesForSelfExtract=true `
+            -o $env:PUBLISH_DIR
+
+      - name: Upload published EXE artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: DuplicateFinder-win-x64-single-exe
+          path: ${{ env.PUBLISH_DIR }}
+          if-no-files-found: error
