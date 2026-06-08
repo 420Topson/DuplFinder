@@ -46,13 +46,13 @@ dotnet build .\DuplicateFinder.csproj -c Release
 Use `scan` first to create and populate a SQLite database:
 
 ```powershell
-dotnet run --project .\DuplicateFinder.csproj -- scan "D:\" --db duplicates.db
+dotnet run --project .\DuplicateFinder.csproj -- scan "D:" --db duplicates.db
 ```
 
 You can scan any drive or folder:
 
 ```powershell
-dotnet run --project .\DuplicateFinder.csproj -- scan "C:\Users\You\Pictures" --db pictures.db
+dotnet run --project .\DuplicateFinder.csproj -- scan "C:\Users\You\Pictures" --db pictures.db --profile nvme
 dotnet run --project .\DuplicateFinder.csproj -- scan ".\SomeFolder" --db local.db
 ```
 
@@ -69,21 +69,40 @@ dotnet run --project .\DuplicateFinder.csproj -- duplicates --db duplicates.db
 Scans a drive or folder, hashes allowed files, and writes results to SQLite.
 
 ```powershell
-dotnet run --project .\DuplicateFinder.csproj -- scan <path> --db duplicates.db --threads auto
+dotnet run --project .\DuplicateFinder.csproj -- scan <path> --db duplicates.db --profile sata-ssd
 ```
 
 Useful options:
 
 ```text
 --db <file>                      Database path, default duplicates.db
---threads auto|1|2|4|8           Worker count, default max(1, CPU-1)
---low-resource                   Smaller queues and conservative defaults
+--profile hdd|sata-ssd|nvme      Performance profile, default sata-ssd
+--threads auto|1|2|4|8           Worker count, default comes from profile
+--low-resource                   Alias for --profile hdd; explicit flags still override defaults
 --batch-size <n>                 SQLite records per transaction
 --channel-capacity <n>           Work queue capacity
 --buffer-size <512KB|1MB|...>    File read buffer size
 --large-file-parallelism <n>     Limit parallel hashing for large files
+--large-file-threshold <512MB>   Size where large-file parallelism limit applies
 --follow-reparse-points          Follow symlinks/junctions; off by default
 --record-skipped                 Store skipped files/directories in the DB
+```
+
+Performance profiles set scan defaults. Explicit CLI flags are applied after the profile, so they override it.
+
+```powershell
+dotnet run --project .\DuplicateFinder.csproj -- scan "D:" --db duplicates.db --profile hdd
+dotnet run --project .\DuplicateFinder.csproj -- scan "D:" --db duplicates.db --profile sata-ssd
+dotnet run --project .\DuplicateFinder.csproj -- scan "D:" --db duplicates.db --profile nvme
+dotnet run --project .\DuplicateFinder.csproj -- scan "C:\Users\You\Pictures" --db pictures.db --profile nvme --threads 4
+```
+
+Profiles:
+
+```text
+hdd       HDD / USB / older PCs / conservative I/O
+sata-ssd  default balanced profile
+nvme      NVMe / modern CPU / more RAM / aggressive queues and buffers
 ```
 
 ### `duplicates`
