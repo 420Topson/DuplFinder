@@ -89,29 +89,16 @@ public static class PathFilters
             return true;
         }
 
-        var ext = NormalizeExtension(file.Extension);
-        if (options.ExcludeExtensions.Contains(ext))
-        {
-            reason = "excluded by --exclude-ext";
-            return true;
-        }
-
-        if (options.AllFiles)
-            return false;
-
-        if (options.IncludeExtensions.Count == 0 && ExcludedExtensions.Contains(ext))
+        var ext = file.Extension;
+        if (ExcludedExtensions.Contains(ext))
         {
             reason = "excluded technical extension";
             return true;
         }
 
-        var allowedExtensions = options.IncludeExtensions.Count > 0
-            ? options.IncludeExtensions
-            : AllowedExtensions;
-
-        if (!allowedExtensions.Contains(ext))
+        if (!AllowedExtensions.Contains(ext))
         {
-            reason = options.IncludeExtensions.Count > 0 ? "not in --include-ext" : "not in whitelist";
+            reason = "not in whitelist";
             return true;
         }
 
@@ -121,13 +108,5 @@ public static class PathFilters
     private static string Normalize(string path)
     {
         return path.Replace(Path.AltDirectorySeparatorChar, Path.DirectorySeparatorChar).TrimEnd(Path.DirectorySeparatorChar);
-    }
-
-    private static string NormalizeExtension(string extension)
-    {
-        if (string.IsNullOrWhiteSpace(extension))
-            return "";
-
-        return extension.StartsWith(".", StringComparison.Ordinal) ? extension : "." + extension;
     }
 }
