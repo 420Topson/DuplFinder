@@ -49,6 +49,7 @@ public static class Program
                 case "duplicates":
                 {
                     var options = ParseDuplicateOptions(rest);
+                    db.EnsureDatabaseExists(options.DbPath);
                     await db.InitializeAsync(options.DbPath, cts.Token);
                     var duplicateService = new DuplicateService(db);
                     await duplicateService.PrintDuplicatesAsync(options, cts.Token);
@@ -58,6 +59,7 @@ public static class Program
                 case "stats":
                 {
                     var dbPath = GetOption(rest, "--db") ?? "duplicates.db";
+                    db.EnsureDatabaseExists(dbPath);
                     await db.InitializeAsync(dbPath, cts.Token);
                     var stats = await db.GetStatsAsync(dbPath, cts.Token);
                     Console.WriteLine($"Files in DB: {stats.Total}");
@@ -73,6 +75,7 @@ public static class Program
                 {
                     var dbPath = GetOption(rest, "--db") ?? "duplicates.db";
                     var batchSize = TryParseInt(GetOption(rest, "--batch-size"), 1000);
+                    db.EnsureDatabaseExists(dbPath);
                     await db.InitializeAsync(dbPath, cts.Token);
                     var deleted = await db.CleanMissingFilesAsync(dbPath, batchSize, cts.Token);
                     Console.WriteLine($"Usunięto z bazy wpisy nieistniejących plików: {deleted}");
@@ -100,7 +103,7 @@ public static class Program
     private static ScanOptions ParseScanOptions(string[] args)
     {
         if (args.Length == 0 || args[0].StartsWith("--", StringComparison.Ordinal))
-            throw new ArgumentException("Podaj katalog lub dysk, np. scan \"D:\\".");
+            throw new ArgumentException("Podaj katalog lub dysk, np. scan \"D:\\\".");
 
         var root = args[0];
         var low = HasFlag(args, "--low-resource");
@@ -193,12 +196,14 @@ Komendy:
   clean-db [opcje]
 
 Scan:
+  scan <path> --db duplicates.db --threads auto
   scan "D:\" --db duplicates.db --threads auto
-  scan "D:\" --db duplicates.db --threads 8 --batch-size 5000
-  scan "D:\" --low-resource --threads 2 --batch-size 500 --channel-capacity 1000 --large-file-parallelism 1
-  scan "D:\" --low-resource --threads 1 --batch-size 250 --buffer-size 512KB
+  scan "C:\Users\You\Pictures" --db pictures.db --threads 4
+  scan ".\SomeFolder" --low-resource --threads 2 --batch-size 500 --channel-capacity 1000 --large-file-parallelism 1
+  scan ".\SomeFolder" --low-resource --threads 1 --batch-size 250 --buffer-size 512KB
 
 Opcje scan:
+  <path>                           Dowolny dysk lub katalog do skanowania
   --db <plik>                      Domyślnie duplicates.db
   --threads auto|1|2|4|8           Domyślnie max(1, CPU-1)
   --low-resource                   Mniejsze kolejki, batch i domyślnie max 2 workery
