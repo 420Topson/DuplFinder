@@ -44,11 +44,29 @@ function Get-DefaultParentWorkDir {
         return $env:RUNNER_TEMP
     }
 
-    if (-not [string]::IsNullOrWhiteSpace($env:TEMP)) {
-        return $env:TEMP
+    $tempPath = [System.IO.Path]::GetTempPath()
+    if (-not (Test-IsDefaultScanExcludedPath -Path $tempPath)) {
+        return $tempPath
     }
 
-    return [System.IO.Path]::GetTempPath()
+    $localAppData = $env:LOCALAPPDATA
+    if ([string]::IsNullOrWhiteSpace($localAppData)) {
+        $localAppData = [Environment]::GetFolderPath([Environment+SpecialFolder]::LocalApplicationData)
+    }
+
+    if (-not [string]::IsNullOrWhiteSpace($localAppData)) {
+        return (Join-Path $localAppData 'DuplFinderSmoke')
+    }
+
+    return $tempPath
+}
+
+function Test-IsDefaultScanExcludedPath {
+    param([string]$Path)
+
+    $normalized = $Path.Replace([System.IO.Path]::AltDirectorySeparatorChar, [System.IO.Path]::DirectorySeparatorChar).TrimEnd([System.IO.Path]::DirectorySeparatorChar)
+    return $normalized.Contains('\AppData\Local\Temp', [StringComparison]::OrdinalIgnoreCase) -or
+        $normalized.Contains('\AppData\Local\Microsoft\Windows', [StringComparison]::OrdinalIgnoreCase)
 }
 
 function New-TestFileBytes {
