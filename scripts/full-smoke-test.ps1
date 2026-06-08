@@ -297,6 +297,8 @@ function Assert-PrestageReportHtml {
     $html = Get-Content -LiteralPath $Path -Raw
     Assert-True -Condition ($html.Contains('duplfinder.stage-plan.v1', [StringComparison]::Ordinal)) -Message 'Prestage report is missing the stage-plan schema marker.'
     Assert-True -Condition ($html.Contains('Export stage-plan.json', [StringComparison]::Ordinal)) -Message 'Prestage report is missing the export button text.'
+    Assert-True -Condition ($html.Contains('Files in duplicate groups', [StringComparison]::Ordinal)) -Message 'Prestage report is missing the files-in-duplicate-groups summary label.'
+    Assert-True -Condition ($html.Contains('Redundant files', [StringComparison]::Ordinal)) -Message 'Prestage report is missing the redundant files summary label.'
     Assert-True -Condition ($html.Contains('This report does not move or delete files. It only exports a stage plan.', [StringComparison]::Ordinal)) -Message 'Prestage report is missing the no move/delete safety warning.'
     $jsonEscapedKnownPath = $KnownDuplicatePath.Replace('\', '\\')
     Assert-True -Condition (($html.Contains($KnownDuplicatePath, [StringComparison]::Ordinal)) -or ($html.Contains($jsonEscapedKnownPath, [StringComparison]::Ordinal))) -Message 'Prestage report is missing a known duplicate path from the generated dataset.'

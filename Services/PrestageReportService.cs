@@ -228,7 +228,7 @@ ORDER BY path;";
 
     .summary {
       display: grid;
-      grid-template-columns: repeat(4, minmax(150px, 1fr));
+      grid-template-columns: repeat(5, minmax(150px, 1fr));
       gap: 12px;
       margin: 18px 0;
     }
@@ -404,8 +404,12 @@ ORDER BY path;";
         <div class="summary-value" id="summary-groups">0</div>
       </div>
       <div class="summary-item">
-        <div class="summary-label">Duplicate files</div>
+        <div class="summary-label">Files in duplicate groups</div>
         <div class="summary-value" id="summary-files">0</div>
+      </div>
+      <div class="summary-item">
+        <div class="summary-label">Redundant files</div>
+        <div class="summary-value" id="summary-redundant">0</div>
       </div>
       <div class="summary-item">
         <div class="summary-label">Selected for staging</div>
@@ -458,9 +462,11 @@ ORDER BY path;";
       let selectedCount = 0;
       let selectedBytes = 0;
       let fileCount = 0;
+      let redundantCount = 0;
 
       for (const group of reportData.groups) {
         fileCount += group.files.length;
+        redundantCount += Math.max(0, group.files.length - 1);
         const groupState = state.get(group.group_number);
         for (const index of groupState.staged) {
           const file = group.files[index];
@@ -472,6 +478,7 @@ ORDER BY path;";
 
       document.getElementById('summary-groups').textContent = reportData.groups.length.toString();
       document.getElementById('summary-files').textContent = fileCount.toString();
+      document.getElementById('summary-redundant').textContent = redundantCount.toString();
       document.getElementById('summary-selected').textContent = selectedCount.toString();
       document.getElementById('summary-bytes').textContent = formatBytes(selectedBytes);
     }

@@ -118,6 +118,12 @@ if ($reportText -notmatch 'duplfinder\.stage-plan\.v1') {
 if ($reportText -notmatch 'Export stage-plan\.json') {
     throw 'Smoke test failed: prestage report does not contain the export button text.'
 }
+if ($reportText -notmatch 'Files in duplicate groups') {
+    throw 'Smoke test failed: prestage report does not contain the files-in-duplicate-groups summary label.'
+}
+if ($reportText -notmatch 'Redundant files') {
+    throw 'Smoke test failed: prestage report does not contain the redundant files summary label.'
+}
 if ($reportText -notmatch [regex]::Escape($knownPath) -and $reportText -notmatch [regex]::Escape($knownPathJson)) {
     throw 'Smoke test failed: prestage report does not contain a known duplicate path.'
 }
