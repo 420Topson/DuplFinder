@@ -1,6 +1,6 @@
 # GitHub Actions setup
 
-This project contains `.github/workflows/dotnet-ci.yml`.
+This project contains `.github/workflows/dotnet.yml`.
 
 Workflow steps:
 
@@ -21,7 +21,7 @@ Models/
 Services/
 Utils/
 scripts/smoke-test.ps1
-.github/workflows/dotnet-ci.yml
+.github/workflows/dotnet.yml
 ```
 
 If you keep the project in `src/DuplicateFinder.Cli`, update `PROJECT_PATH` and the smoke-test path in the workflow.
