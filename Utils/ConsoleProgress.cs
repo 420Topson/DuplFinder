@@ -12,6 +12,7 @@ public sealed class ConsoleProgress
     private long _bytesHashed;
     private long _written;
     private readonly DateTime _startedUtc = DateTime.UtcNow;
+    private readonly bool _interactiveOutput = !Console.IsOutputRedirected && Environment.UserInteractive;
 
     public void Candidate() => Interlocked.Increment(ref _candidates);
     public void Skipped() => Interlocked.Increment(ref _skipped);
@@ -26,6 +27,9 @@ public sealed class ConsoleProgress
 
     public async Task RenderUntilCancelledAsync(ScanOptions options, CancellationToken ct)
     {
+        if (!_interactiveOutput)
+            return;
+
         while (!ct.IsCancellationRequested)
         {
             Render(options, final: false);
@@ -50,8 +54,33 @@ public sealed class ConsoleProgress
             $"Workers: {options.Threads}";
 
         if (final)
-            Console.WriteLine(line);
-        else
-            Console.Write("\r" + line.PadRight(Console.WindowWidth > 0 ? Console.WindowWidth - 1 : line.Length));
+        {
+            Console.WriteLine(_interactiveOutput ? "\r" + PadForWindow(line) : line);
+            return;
+        }
+
+        if (_interactiveOutput)
+            Console.Write("\r" + PadForWindow(line));
+    }
+
+    private static string PadForWindow(string line)
+    {
+        var width = GetWindowWidth();
+        if (width <= 1)
+            return line;
+
+        return line.PadRight(Math.Max(line.Length, width - 1));
+    }
+
+    private static int GetWindowWidth()
+    {
+        try
+        {
+            return Console.WindowWidth;
+        }
+        catch (Exception ex) when (ex is IOException or InvalidOperationException or PlatformNotSupportedException)
+        {
+            return 0;
+        }
     }
 }
