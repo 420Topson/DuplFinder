@@ -12,6 +12,7 @@ out/
 *.db
 *.db-shm
 *.db-wal
+*.log
 *.sqlite
 *.sqlite-shm
 *.sqlite-wal
