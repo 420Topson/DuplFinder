@@ -5,6 +5,7 @@ public sealed class ScanOptions
     public required string RootPath { get; init; }
     public string DbPath { get; init; } = "duplicates.db";
     public string HashAlgorithm { get; init; } = "SHA-256";
+    public ScanProfile Profile { get; init; } = ScanProfile.SataSsd;
     public int Threads { get; init; } = Math.Max(1, Environment.ProcessorCount - 1);
     public bool LowResource { get; init; }
     public int BatchSize { get; init; } = 1000;
