@@ -37,8 +37,9 @@ public static class Program
                     var options = ParseScanOptions(rest);
                     Console.WriteLine($"DB: {options.DbPath}");
                     Console.WriteLine($"Root: {options.RootPath}");
+                    Console.WriteLine($"Profile: {FormatProfile(options.Profile)}");
                     Console.WriteLine($"Threads: {options.Threads}, batch: {options.BatchSize}, channel: {options.ChannelCapacity}, buffer: {SizeParser.FormatBytes(options.BufferSize)}");
-                    Console.WriteLine($"Low resource: {options.LowResource}, large file parallelism: {options.LargeFileParallelism}");
+                    Console.WriteLine($"Low resource: {options.LowResource}, large file parallelism: {options.LargeFileParallelism}, large file threshold: {SizeParser.FormatBytes(options.LargeFileThresholdBytes)}");
                     Console.WriteLine("Kasowanie plików jest wyłączone. Program tylko raportuje duplikaty.");
 
                     var scan = new ScanService(db);
@@ -107,22 +108,28 @@ public static class Program
 
         var root = args[0];
         var low = HasFlag(args, "--low-resource");
-        var threads = ParseThreads(GetOption(args, "--threads"), low);
-        var batchSize = TryParseInt(GetOption(args, "--batch-size"), low ? 500 : 1000);
-        var channelCapacity = TryParseInt(GetOption(args, "--channel-capacity"), low ? 1000 : 5000);
-        var bufferSize = TryParseSizeToInt(GetOption(args, "--buffer-size"), low ? 512 * 1024 : 1024 * 1024);
-        var largeFileParallelism = TryParseInt(GetOption(args, "--large-file-parallelism"), low ? 1 : Math.Max(1, Math.Min(2, Environment.ProcessorCount / 2)));
+        var requestedProfile = ParseProfile(GetOption(args, "--profile"));
+        var profile = low ? ScanProfile.Hdd : requestedProfile;
+        var defaults = GetProfileDefaults(profile);
+        var threads = ParseThreads(GetOption(args, "--threads"), defaults.Threads);
+        var batchSize = TryParseInt(GetOption(args, "--batch-size"), defaults.BatchSize);
+        var channelCapacity = TryParseInt(GetOption(args, "--channel-capacity"), defaults.ChannelCapacity);
+        var bufferSize = TryParseSizeToInt(GetOption(args, "--buffer-size"), defaults.BufferSize);
+        var largeFileParallelism = TryParseInt(GetOption(args, "--large-file-parallelism"), defaults.LargeFileParallelism);
+        var largeFileThresholdBytes = TryParseSizeToLong(GetOption(args, "--large-file-threshold"), defaults.LargeFileThresholdBytes);
 
         return new ScanOptions
         {
             RootPath = root,
             DbPath = GetOption(args, "--db") ?? "duplicates.db",
+            Profile = profile,
             Threads = threads,
             LowResource = low,
             BatchSize = Math.Max(1, batchSize),
             ChannelCapacity = Math.Max(10, channelCapacity),
             BufferSize = Math.Max(64 * 1024, bufferSize),
             LargeFileParallelism = Math.Max(1, largeFileParallelism),
+            LargeFileThresholdBytes = Math.Max(1, largeFileThresholdBytes),
             FollowReparsePoints = HasFlag(args, "--follow-reparse-points"),
             RecordSkipped = HasFlag(args, "--record-skipped")
         };
@@ -138,10 +145,63 @@ public static class Program
         };
     }
 
-    private static int ParseThreads(string? value, bool lowResource)
+    private static ScanProfile ParseProfile(string? value)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+            return ScanProfile.SataSsd;
+
+        return value.Trim().ToLowerInvariant() switch
+        {
+            "hdd" => ScanProfile.Hdd,
+            "sata-ssd" => ScanProfile.SataSsd,
+            "nvme" => ScanProfile.Nvme,
+            _ => throw new ArgumentException("Unknown profile. Valid values: hdd, sata-ssd, nvme")
+        };
+    }
+
+    private static ScanProfileDefaults GetProfileDefaults(ScanProfile profile)
+    {
+        var cpu = Environment.ProcessorCount;
+
+        return profile switch
+        {
+            ScanProfile.Hdd => new ScanProfileDefaults(
+                Threads: Math.Min(2, Math.Max(1, cpu - 1)),
+                BatchSize: 500,
+                ChannelCapacity: 1000,
+                BufferSize: 512 * 1024,
+                LargeFileParallelism: 1,
+                LargeFileThresholdBytes: 512L * 1024 * 1024),
+            ScanProfile.SataSsd => new ScanProfileDefaults(
+                Threads: Math.Max(1, cpu - 1),
+                BatchSize: 1000,
+                ChannelCapacity: 5000,
+                BufferSize: 1024 * 1024,
+                LargeFileParallelism: Math.Max(1, Math.Min(2, cpu / 2)),
+                LargeFileThresholdBytes: 512L * 1024 * 1024),
+            ScanProfile.Nvme => new ScanProfileDefaults(
+                Threads: Math.Max(1, cpu),
+                BatchSize: 5000,
+                ChannelCapacity: 20000,
+                BufferSize: 4 * 1024 * 1024,
+                LargeFileParallelism: Math.Max(2, Math.Min(4, cpu / 2)),
+                LargeFileThresholdBytes: 512L * 1024 * 1024),
+            _ => throw new ArgumentOutOfRangeException(nameof(profile), profile, null)
+        };
+    }
+
+    private static string FormatProfile(ScanProfile profile) => profile switch
+    {
+        ScanProfile.Hdd => "hdd",
+        ScanProfile.SataSsd => "sata-ssd",
+        ScanProfile.Nvme => "nvme",
+        _ => profile.ToString()
+    };
+
+    private static int ParseThreads(string? value, int fallback)
     {
         if (string.IsNullOrWhiteSpace(value) || value.Equals("auto", StringComparison.OrdinalIgnoreCase))
-            return lowResource ? Math.Min(2, Math.Max(1, Environment.ProcessorCount - 1)) : Math.Max(1, Environment.ProcessorCount - 1);
+            return fallback;
 
         if (!int.TryParse(value, out var parsed) || parsed < 1)
             throw new ArgumentException("--threads musi być: auto, 1, 2, 4, 8 itd.");
@@ -165,6 +225,21 @@ public static class Program
             throw new ArgumentException("Wartość jest zbyt duża dla bufora.");
         return (int)bytes;
     }
+
+    private static long TryParseSizeToLong(string? value, long fallback)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+            return fallback;
+        return SizeParser.ParseBytes(value);
+    }
+
+    private sealed record ScanProfileDefaults(
+        int Threads,
+        int BatchSize,
+        int ChannelCapacity,
+        int BufferSize,
+        int LargeFileParallelism,
+        long LargeFileThresholdBytes);
 
     private static bool HasFlag(string[] args, string name) => args.Any(a => a.Equals(name, StringComparison.OrdinalIgnoreCase));
 
@@ -196,21 +271,26 @@ Komendy:
   clean-db [opcje]
 
 Scan:
-  scan <path> --db duplicates.db --threads auto
-  scan "D:\" --db duplicates.db --threads auto
-  scan "C:\Users\You\Pictures" --db pictures.db --threads 4
-  scan ".\SomeFolder" --low-resource --threads 2 --batch-size 500 --channel-capacity 1000 --large-file-parallelism 1
-  scan ".\SomeFolder" --low-resource --threads 1 --batch-size 250 --buffer-size 512KB
+  scan <path> --db duplicates.db --profile sata-ssd
+  scan "D:" --db duplicates.db --profile hdd
+  scan "D:" --db duplicates.db --profile sata-ssd
+  scan "D:" --db duplicates.db --profile nvme
+  scan "C:\Users\You\Pictures" --db pictures.db --profile nvme --threads 4
 
 Opcje scan:
   <path>                           Dowolny dysk lub katalog do skanowania
   --db <plik>                      Domyślnie duplicates.db
-  --threads auto|1|2|4|8           Domyślnie max(1, CPU-1)
-  --low-resource                   Mniejsze kolejki, batch i domyślnie max 2 workery
+  --profile hdd|sata-ssd|nvme      Domyślnie sata-ssd
+                                   hdd       HDD / USB / stare PC / konserwatywne I/O
+                                   sata-ssd  domyślny profil zbalansowany
+                                   nvme      NVMe / nowy CPU / więcej RAM / agresywne kolejki i bufory
+  --threads auto|1|2|4|8           Domyślnie z profilu
+  --low-resource                   Alias profilu hdd; jawne flagi nadal nadpisują defaulty
   --batch-size <n>                 Ile rekordów SQLite na transakcję
   --channel-capacity <n>           Limit kolejki Channel<T>, czyli backpressure
   --buffer-size <512KB|1MB|...>    Bufor odczytu pliku
   --large-file-parallelism <n>     Limit równoległego hashowania dużych plików
+  --large-file-threshold <512MB>   Od jakiego rozmiaru stosować limit dużych plików
   --follow-reparse-points          Domyślnie wyłączone
   --record-skipped                 Zapisuje pominięte wpisy do DB, może zwiększyć bazę
 

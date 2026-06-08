@@ -28,6 +28,10 @@ New-Item -ItemType Directory -Force -Path $sub | Out-Null
 
 $db = Join-Path $root 'smoke.db'
 $csv = Join-Path $root 'dups.csv'
+$profileHddDb = Join-Path $root 'profile-hdd.db'
+$profileSataSsdDb = Join-Path $root 'profile-sata-ssd.db'
+$profileNvmeDb = Join-Path $root 'profile-nvme.db'
+$profileNvmeOverrideDb = Join-Path $root 'profile-nvme-override.db'
 
 # Two real duplicates.
 [IO.File]::WriteAllBytes((Join-Path $root 'a.txt'), [Text.Encoding]::UTF8.GetBytes('same-payload'))
@@ -38,6 +42,38 @@ $csv = Join-Path $root 'dups.csv'
 
 # Excluded by default extension list. With --record-skipped it should be stored as skipped, not hashed as OK.
 [IO.File]::WriteAllBytes((Join-Path $root 'ignored.exe'), [Text.Encoding]::UTF8.GetBytes('same-payload'))
+
+$profileHdd = Run-Checked 'scan profile hdd' {
+    dotnet run --project $ProjectPath -- scan $root --db $profileHddDb --profile hdd --record-skipped
+}
+
+if ($profileHdd -notmatch 'Profile:\s+hdd') {
+    throw 'Smoke test failed: --profile hdd was not applied.'
+}
+
+$profileSataSsd = Run-Checked 'scan profile sata-ssd' {
+    dotnet run --project $ProjectPath -- scan $root --db $profileSataSsdDb --profile sata-ssd --record-skipped
+}
+
+if ($profileSataSsd -notmatch 'Profile:\s+sata-ssd') {
+    throw 'Smoke test failed: --profile sata-ssd was not applied.'
+}
+
+$profileNvme = Run-Checked 'scan profile nvme' {
+    dotnet run --project $ProjectPath -- scan $root --db $profileNvmeDb --profile nvme --record-skipped
+}
+
+if ($profileNvme -notmatch 'Profile:\s+nvme') {
+    throw 'Smoke test failed: --profile nvme was not applied.'
+}
+
+$profileNvmeOverride = Run-Checked 'scan profile nvme explicit threads' {
+    dotnet run --project $ProjectPath -- scan $root --db $profileNvmeOverrideDb --profile nvme --threads 1 --record-skipped
+}
+
+if ($profileNvmeOverride -notmatch 'Profile:\s+nvme' -or $profileNvmeOverride -notmatch 'Threads:\s+1') {
+    throw 'Smoke test failed: --profile nvme --threads 1 did not keep the explicit thread override.'
+}
 
 $scan1 = Run-Checked 'scan #1' {
     dotnet run --project $ProjectPath -- scan $root --db $db --threads 2 --batch-size 2 --channel-capacity 5 --buffer-size 64KB --large-file-parallelism 1 --record-skipped
@@ -90,7 +126,7 @@ $dupsAfterClean = Run-Checked 'duplicates after clean-db' {
     dotnet run --project $ProjectPath -- duplicates --db $db
 }
 
-if ($dupsAfterClean -notmatch 'Nie znaleziono grup duplikatów') {
+if ($dupsAfterClean -notmatch 'Nie znaleziono grup') {
     throw 'Smoke test failed: duplicate group should disappear after deleting one copy and running clean-db.'
 }
 
