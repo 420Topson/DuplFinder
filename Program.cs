@@ -39,7 +39,6 @@ public static class Program
                     Console.WriteLine($"Root: {options.RootPath}");
                     Console.WriteLine($"Threads: {options.Threads}, batch: {options.BatchSize}, channel: {options.ChannelCapacity}, buffer: {SizeParser.FormatBytes(options.BufferSize)}");
                     Console.WriteLine($"Low resource: {options.LowResource}, large file parallelism: {options.LargeFileParallelism}");
-                    Console.WriteLine($"Filters: {DescribeScanFilters(options)}");
                     Console.WriteLine("Kasowanie plików jest wyłączone. Program tylko raportuje duplikaty.");
 
                     var scan = new ScanService(db);
@@ -108,13 +107,6 @@ public static class Program
 
         var root = args[0];
         var low = HasFlag(args, "--low-resource");
-        var allFiles = HasFlag(args, "--all-files");
-        var includeExtensions = ParseExtensions(GetOptionValues(args, "--include-ext"), "--include-ext");
-        var excludeExtensions = ParseExtensions(GetOptionValues(args, "--exclude-ext"), "--exclude-ext");
-
-        if (allFiles && includeExtensions.Count > 0)
-            throw new ArgumentException("--all-files nie może być użyte razem z --include-ext.");
-
         var threads = ParseThreads(GetOption(args, "--threads"), low);
         var batchSize = TryParseInt(GetOption(args, "--batch-size"), low ? 500 : 1000);
         var channelCapacity = TryParseInt(GetOption(args, "--channel-capacity"), low ? 1000 : 5000);
@@ -132,10 +124,7 @@ public static class Program
             BufferSize = Math.Max(64 * 1024, bufferSize),
             LargeFileParallelism = Math.Max(1, largeFileParallelism),
             FollowReparsePoints = HasFlag(args, "--follow-reparse-points"),
-            RecordSkipped = HasFlag(args, "--record-skipped"),
-            AllFiles = allFiles,
-            IncludeExtensions = includeExtensions,
-            ExcludeExtensions = excludeExtensions
+            RecordSkipped = HasFlag(args, "--record-skipped")
         };
     }
 
@@ -195,61 +184,6 @@ public static class Program
         return null;
     }
 
-    private static List<string> GetOptionValues(string[] args, string name)
-    {
-        var values = new List<string>();
-        for (var i = 0; i < args.Length; i++)
-        {
-            if (!args[i].Equals(name, StringComparison.OrdinalIgnoreCase))
-                continue;
-
-            if (i + 1 >= args.Length || args[i + 1].StartsWith("--", StringComparison.Ordinal))
-                throw new ArgumentException($"Opcja {name} wymaga wartości.");
-
-            values.Add(args[++i]);
-        }
-
-        return values;
-    }
-
-    private static HashSet<string> ParseExtensions(IEnumerable<string> values, string optionName)
-    {
-        var extensions = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-
-        foreach (var value in values)
-        {
-            foreach (var part in value.Split([',', ';'], StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
-            {
-                var extension = part.StartsWith(".", StringComparison.Ordinal) ? part : "." + part;
-                if (extension.Length == 1 || extension.Contains('*', StringComparison.Ordinal))
-                    throw new ArgumentException($"{optionName} zawiera niepoprawne rozszerzenie: {part}");
-
-                extensions.Add(extension.ToLowerInvariant());
-            }
-        }
-
-        return extensions;
-    }
-
-    private static string DescribeScanFilters(ScanOptions options)
-    {
-        var mode = options.AllFiles
-            ? "all files"
-            : options.IncludeExtensions.Count > 0
-                ? "custom include extensions: " + FormatExtensions(options.IncludeExtensions)
-                : "default document/media whitelist";
-
-        if (options.ExcludeExtensions.Count > 0)
-            mode += "; excluding: " + FormatExtensions(options.ExcludeExtensions);
-
-        return mode;
-    }
-
-    private static string FormatExtensions(IEnumerable<string> extensions)
-    {
-        return string.Join(", ", extensions.OrderBy(e => e, StringComparer.OrdinalIgnoreCase));
-    }
-
     private static void PrintHelp()
     {
         Console.WriteLine("""
@@ -266,8 +200,6 @@ Scan:
   scan "D:\" --db duplicates.db --threads 8 --batch-size 5000
   scan "D:\" --low-resource --threads 2 --batch-size 500 --channel-capacity 1000 --large-file-parallelism 1
   scan "D:\" --low-resource --threads 1 --batch-size 250 --buffer-size 512KB
-  scan "D:\" --include-ext .pdf,.docx --exclude-ext .tmp
-  scan "D:\" --all-files --exclude-ext .iso,.bak
 
 Opcje scan:
   --db <plik>                      Domyślnie duplicates.db
@@ -279,9 +211,6 @@ Opcje scan:
   --large-file-parallelism <n>     Limit równoległego hashowania dużych plików
   --follow-reparse-points          Domyślnie wyłączone
   --record-skipped                 Zapisuje pominięte wpisy do DB, może zwiększyć bazę
-  --all-files                      Skanuje wszystkie rozszerzenia zamiast domyślnej whitelisty
-  --include-ext <.pdf,.jpg>        Własna whitelista rozszerzeń; można powtórzyć
-  --exclude-ext <.tmp,.bak>        Pomija rozszerzenia; można powtórzyć i ma pierwszeństwo
 
 Duplicates:
   duplicates --db duplicates.db
