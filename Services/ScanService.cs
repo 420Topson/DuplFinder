@@ -60,7 +60,6 @@ public sealed class ScanService
 
         progressCts.Cancel();
         try { await progressTask; } catch (OperationCanceledException) { }
-        Console.WriteLine();
         progress.Render(options, final: true);
     }
 
