@@ -95,6 +95,37 @@ public static class Program
                     return 0;
                 }
 
+                case "apply-stage-plan":
+                {
+                    var options = ParseApplyStagePlanOptions(rest);
+                    var stagePlan = new StagePlanService();
+                    var result = await stagePlan.ApplyStagePlanAsync(options, cts.Token);
+                    Console.WriteLine($"Groups: {result.Groups}");
+                    Console.WriteLine($"Planned: {result.Planned}");
+                    Console.WriteLine($"Moved: {result.Moved}");
+                    Console.WriteLine($"Skipped: {result.Skipped}");
+                    Console.WriteLine($"Failed: {result.Failed}");
+                    if (!string.IsNullOrWhiteSpace(result.QuarantineSessionPath))
+                        Console.WriteLine($"Quarantine session: {result.QuarantineSessionPath}");
+                    if (!string.IsNullOrWhiteSpace(result.ManifestPath))
+                        Console.WriteLine($"Manifest: {result.ManifestPath}");
+                    Console.WriteLine("No files were deleted. KEEP files were not modified.");
+                    return 0;
+                }
+
+                case "undo-quarantine":
+                {
+                    var options = ParseUndoQuarantineOptions(rest);
+                    var stagePlan = new StagePlanService();
+                    var result = await stagePlan.UndoQuarantineAsync(options, cts.Token);
+                    Console.WriteLine($"Planned: {result.Planned}");
+                    Console.WriteLine($"Restored: {result.Restored}");
+                    Console.WriteLine($"Skipped: {result.Skipped}");
+                    Console.WriteLine($"Failed: {result.Failed}");
+                    Console.WriteLine("No files were deleted. Existing original files were not overwritten.");
+                    return 0;
+                }
+
                 default:
                     Console.WriteLine($"Nieznana komenda: {args[0]}");
                     PrintHelp();
@@ -158,6 +189,37 @@ public static class Program
             DbPath = GetOption(args, "--db") ?? "duplicates.db",
             OutputPath = outputPath,
             Force = HasFlag(args, "--force")
+        };
+    }
+
+    private static ApplyStagePlanOptions ParseApplyStagePlanOptions(string[] args)
+    {
+        var planPath = GetOption(args, "--plan");
+        if (string.IsNullOrWhiteSpace(planPath))
+            throw new ArgumentException("Opcja --plan jest wymagana, np. apply-stage-plan --plan stage-plan.json --dry-run.");
+
+        var quarantineRoot = GetOption(args, "--quarantine");
+        return new ApplyStagePlanOptions
+        {
+            PlanPath = planPath,
+            QuarantineRoot = quarantineRoot,
+            DryRun = HasFlag(args, "--dry-run") || string.IsNullOrWhiteSpace(quarantineRoot)
+        };
+    }
+
+    private static UndoQuarantineOptions ParseUndoQuarantineOptions(string[] args)
+    {
+        var manifestPath = GetOption(args, "--manifest");
+        if (string.IsNullOrWhiteSpace(manifestPath))
+            throw new ArgumentException("Opcja --manifest jest wymagana, np. undo-quarantine --manifest duplfinder-quarantine-manifest.json --dry-run.");
+
+        if (HasFlag(args, "--restore") && HasFlag(args, "--dry-run"))
+            throw new ArgumentException("Użyj albo --restore, albo --dry-run. Domyślnie undo-quarantine działa jako dry-run.");
+
+        return new UndoQuarantineOptions
+        {
+            ManifestPath = manifestPath,
+            Restore = HasFlag(args, "--restore")
         };
     }
 
@@ -296,6 +358,8 @@ Komendy:
   stats [opcje]
   clean-db [opcje]
   prestage-report [opcje]
+  apply-stage-plan [opcje]
+  undo-quarantine [opcje]
 
 Scan:
   scan <path> --db duplicates.db --profile sata-ssd
@@ -339,6 +403,33 @@ Opcje prestage-report:
   --db <plik>                      Istniejąca baza po skanowaniu, domyślnie duplicates.db
   --out <html>                     Ścieżka raportu HTML, wymagana
   --force                          Nadpisuje istniejący raport HTML
+
+Apply stage plan:
+  apply-stage-plan --plan stage-plan.json --dry-run
+  apply-stage-plan --plan stage-plan.json --quarantine "D:\DuplFinder-Quarantine"
+
+  Default is dry-run/report only. Quarantine mode moves only selected stage_paths
+  from the exported stage-plan.json into a unique session folder and writes
+  duplfinder-quarantine-manifest.json for rollback. KEEP files are never moved.
+  No files are permanently deleted.
+
+Opcje apply-stage-plan:
+  --plan <json>                     stage-plan.json z raportu prestage, wymagany
+  --dry-run                         Tylko pokazuje plan, niczego nie przenosi
+  --quarantine <folder>             Folder kwarantanny; tworzy session-* i manifest
+
+Undo quarantine:
+  undo-quarantine --manifest "D:\DuplFinder-Quarantine\session-...\duplfinder-quarantine-manifest.json" --dry-run
+  undo-quarantine --manifest "D:\DuplFinder-Quarantine\session-...\duplfinder-quarantine-manifest.json" --restore
+
+  Default is dry-run/report only. --restore is required to move files back.
+  Undo verifies manifest schema, quarantine path containment, size and SHA-256,
+  and never overwrites an existing original path. No files are deleted.
+
+Opcje undo-quarantine:
+  --manifest <json>                 Manifest kwarantanny, wymagany
+  --dry-run                         Tylko pokazuje plan, domyślnie
+  --restore                         Przywraca pliki z manifestu bez nadpisywania
 
 Stats:
   stats --db duplicates.db

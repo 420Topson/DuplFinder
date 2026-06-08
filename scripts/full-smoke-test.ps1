@@ -18,6 +18,10 @@ $script:PrestageReportValidationResult = 'not run'
 $script:PrestageReportPath = ''
 $script:MultiRootValidationResult = 'not run'
 $script:MultiRootPrestageReportPath = ''
+$script:ApplyStagePlanValidationResult = 'not run'
+$script:StagePlanPath = ''
+$script:QuarantineSessionPath = ''
+$script:QuarantineManifestPath = ''
 $script:CleanDbValidationResult = 'not run'
 $script:MissingDbValidationResult = 'not run'
 $script:EmptyFileBehavior = ''
@@ -103,6 +107,54 @@ function Get-FileSha256 {
     param([string]$Path)
 
     return (Get-FileHash -LiteralPath $Path -Algorithm SHA256).Hash
+}
+
+function Write-JsonFile {
+    param(
+        [string]$Path,
+        [object]$Value
+    )
+
+    $parent = Split-Path -Parent $Path
+    if (-not [string]::IsNullOrWhiteSpace($parent)) {
+        New-Item -ItemType Directory -Force -Path $parent | Out-Null
+    }
+
+    $json = $Value | ConvertTo-Json -Depth 12
+    Set-Content -LiteralPath $Path -Value $json -Encoding UTF8
+}
+
+function Assert-FileExists {
+    param(
+        [string]$Path,
+        [string]$Message
+    )
+
+    Assert-True -Condition (Test-Path -LiteralPath $Path -PathType Leaf) -Message $Message
+}
+
+function Assert-FileMissing {
+    param(
+        [string]$Path,
+        [string]$Message
+    )
+
+    Assert-True -Condition (-not (Test-Path -LiteralPath $Path)) -Message $Message
+}
+
+function Get-EntryByOriginalPath {
+    param(
+        [object]$Manifest,
+        [string]$OriginalPath
+    )
+
+    foreach ($entry in @($Manifest.entries)) {
+        if ([string]::Equals([string]$entry.original_path, $OriginalPath, [StringComparison]::OrdinalIgnoreCase)) {
+            return $entry
+        }
+    }
+
+    return $null
 }
 
 function Invoke-DuplFinder {
@@ -580,6 +632,186 @@ try {
     Assert-NoDuplicatePath -Rows $afterCleanRows -Path $alpha3 -Message 'Deleted Alpha file is still present in duplicate output after clean-db.'
     $script:CleanDbValidationResult = "passed: clean-db removed $removedRecords record(s), Alpha group changed from 3 to 2"
 
+    Write-Step 'Apply stage plan and undo quarantine'
+    $applyRoot = Join-Path $workspaceRoot 'apply-stage-dataset'
+    $applyRootA = Join-Path $applyRoot 'root-a'
+    $applyRootB = Join-Path $applyRoot 'root-b'
+    $applyStageOutput = Join-Path $outputRoot 'apply-stage'
+    New-Item -ItemType Directory -Force -Path $applyStageOutput | Out-Null
+
+    $applyAlphaContent = "APPLY ALPHA exact duplicate payload`nthree files"
+    $applyBetaContent = 'APPLY BETA same filename duplicate payload'
+    $applyGammaContent = 'APPLY GAMMA different filename duplicate payload'
+    $applyCrossRootContent = 'APPLY CROSS ROOT duplicate payload'
+    $applyChangedContent = 'APPLY CHANGED duplicate payload before mutation'
+
+    $applyAlphaKeep = New-TestFile -Path (Join-Path (Join-Path $applyRoot 'Alpha Keep') 'alpha-keep.txt') -Content $applyAlphaContent
+    $applyAlphaNested = New-TestFile -Path (Join-Path (Join-Path (Join-Path (Join-Path $applyRoot 'Alpha Nested') 'Level 1') 'Level 2') 'Level 3\alpha-stage-nested.md') -Content $applyAlphaContent
+    $applyAlphaUnicode = New-TestFile -Path (Join-Path (Join-Path $applyRoot 'Zażółć gęślą jaźń') 'alpha_stage_ąęść.txt') -Content $applyAlphaContent
+
+    $applyBetaKeep = New-TestFile -Path (Join-Path (Join-Path $applyRoot 'Beta Keep') 'report.txt') -Content $applyBetaContent
+    $applyBetaStage = New-TestFile -Path (Join-Path (Join-Path $applyRoot 'Beta Stage') 'report.txt') -Content $applyBetaContent
+
+    $applyGammaKeep = New-TestFile -Path (Join-Path (Join-Path $applyRoot 'Folder With Spaces') 'different name one.txt') -Content $applyGammaContent
+    $applyGammaStage = New-TestFile -Path (Join-Path (Join-Path $applyRoot 'Other Folder') 'completely-renamed.md') -Content $applyGammaContent
+
+    $applyRootAKeep = New-TestFile -Path (Join-Path (Join-Path $applyRootA 'Cross Root A') 'cross-root-keep.txt') -Content $applyCrossRootContent
+    $applyRootBStage = New-TestFile -Path (Join-Path (Join-Path (Join-Path $applyRootB 'Cross Root B') 'Nested') 'cross-root-stage-renamed.md') -Content $applyCrossRootContent
+
+    $applySameSize1 = New-TestFileBytes -Path (Join-Path (Join-Path $applyRoot 'Same Size') 'same-size-left.txt') -Bytes ([System.Text.Encoding]::ASCII.GetBytes('1234567890abcdef'))
+    $applySameSize2 = New-TestFileBytes -Path (Join-Path (Join-Path $applyRoot 'Same Size') 'same-size-right.txt') -Bytes ([System.Text.Encoding]::ASCII.GetBytes('fedcba0987654321'))
+    $applySameName1 = New-TestFile -Path (Join-Path (Join-Path $applyRoot 'Same Name A') 'same-name.txt') -Content 'apply same name unique A'
+    $applySameName2 = New-TestFile -Path (Join-Path (Join-Path $applyRoot 'Same Name B') 'same-name.txt') -Content 'apply same name unique B'
+
+    $missingKeepPath = Join-Path (Join-Path $applyRoot 'Missing Keep') 'missing-keep.txt'
+    $missingKeepStage = New-TestFile -Path (Join-Path (Join-Path $applyRoot 'Missing Keep') 'stage-stays.txt') -Content 'stage file should stay because keep is missing'
+
+    $changedKeep = New-TestFile -Path (Join-Path (Join-Path $applyRoot 'Changed Hash') 'changed-keep.txt') -Content $applyChangedContent
+    $changedStage = New-TestFile -Path (Join-Path (Join-Path $applyRoot 'Changed Hash') 'changed-stage.txt') -Content $applyChangedContent
+    $changedGroupHash = Get-FileSha256 -Path $changedKeep
+    $changedGroupSize = (Get-Item -LiteralPath $changedKeep).Length
+    Set-Content -LiteralPath $changedStage -Value 'changed after plan creation; should be skipped' -Encoding UTF8
+
+    Assert-True -Condition ((Get-Item -LiteralPath $applySameSize1).Length -eq (Get-Item -LiteralPath $applySameSize2).Length) -Message 'Apply-stage same-size files do not have identical byte length.'
+    Assert-True -Condition ((Get-FileSha256 -Path $applySameSize1) -ne (Get-FileSha256 -Path $applySameSize2)) -Message 'Apply-stage same-size files unexpectedly have the same SHA-256.'
+    Assert-True -Condition ((Get-FileSha256 -Path $applySameName1) -ne (Get-FileSha256 -Path $applySameName2)) -Message 'Apply-stage same-name files unexpectedly have the same SHA-256.'
+
+    $stagePlanPath = Join-Path $applyStageOutput 'stage-plan.json'
+    $stagePlan = [ordered]@{
+        schema = 'duplfinder.stage-plan.v1'
+        created_utc = (Get-Date).ToUniversalTime().ToString('O')
+        source_db = 'full-smoke-generated'
+        source_report = 'full-smoke-generated'
+        generator = 'DuplFinder full smoke'
+        groups = @(
+            [ordered]@{
+                group_number = 1
+                size = (Get-Item -LiteralPath $applyAlphaKeep).Length
+                hash = Get-FileSha256 -Path $applyAlphaKeep
+                keep_path = $applyAlphaKeep
+                stage_paths = @($applyAlphaNested, $applyAlphaUnicode)
+            },
+            [ordered]@{
+                group_number = 2
+                size = (Get-Item -LiteralPath $applyBetaKeep).Length
+                hash = Get-FileSha256 -Path $applyBetaKeep
+                keep_path = $applyBetaKeep
+                stage_paths = @($applyBetaStage)
+            },
+            [ordered]@{
+                group_number = 3
+                size = (Get-Item -LiteralPath $applyGammaKeep).Length
+                hash = Get-FileSha256 -Path $applyGammaKeep
+                keep_path = $applyGammaKeep
+                stage_paths = @($applyGammaStage)
+            },
+            [ordered]@{
+                group_number = 4
+                size = (Get-Item -LiteralPath $applyRootAKeep).Length
+                hash = Get-FileSha256 -Path $applyRootAKeep
+                keep_path = $applyRootAKeep
+                stage_paths = @($applyRootBStage)
+            },
+            [ordered]@{
+                group_number = 5
+                size = (Get-Item -LiteralPath $missingKeepStage).Length
+                hash = Get-FileSha256 -Path $missingKeepStage
+                keep_path = $missingKeepPath
+                stage_paths = @($missingKeepStage)
+            },
+            [ordered]@{
+                group_number = 6
+                size = $changedGroupSize
+                hash = $changedGroupHash
+                keep_path = $changedKeep
+                stage_paths = @($changedStage)
+            }
+        )
+    }
+    Write-JsonFile -Path $stagePlanPath -Value $stagePlan
+    $script:StagePlanPath = $stagePlanPath
+
+    $expectedMovedPaths = @($applyAlphaNested, $applyAlphaUnicode, $applyBetaStage, $applyGammaStage, $applyRootBStage)
+    $keepPaths = @($applyAlphaKeep, $applyBetaKeep, $applyGammaKeep, $applyRootAKeep, $changedKeep)
+
+    $applyDryRun = Invoke-DuplFinder -CliArgs @('apply-stage-plan', '--plan', $stagePlanPath, '--dry-run') -LogName 'apply-stage-plan-dry-run.log'
+    Assert-True -Condition ($applyDryRun.ExitCode -eq 0) -Message 'apply-stage-plan --dry-run failed.'
+    Assert-True -Condition ($applyDryRun.Output -match 'Mode:\s+dry-run') -Message 'apply-stage-plan dry-run did not report dry-run mode.'
+    foreach ($path in $expectedMovedPaths + @($missingKeepStage, $changedStage)) {
+        Assert-FileExists -Path $path -Message "Dry-run moved or removed a stage path: $path"
+    }
+    foreach ($path in $keepPaths) {
+        Assert-FileExists -Path $path -Message "Dry-run touched a KEEP path: $path"
+    }
+
+    $quarantineRoot = Join-Path $applyStageOutput 'quarantine'
+    $applyQuarantine = Invoke-DuplFinder -CliArgs @('apply-stage-plan', '--plan', $stagePlanPath, '--quarantine', $quarantineRoot) -LogName 'apply-stage-plan-quarantine.log'
+    Assert-True -Condition ($applyQuarantine.ExitCode -eq 0) -Message 'apply-stage-plan quarantine mode failed.'
+    Assert-True -Condition ($applyQuarantine.Output -match 'Mode:\s+quarantine') -Message 'apply-stage-plan quarantine mode did not report quarantine mode.'
+
+    $manifests = @(Get-ChildItem -LiteralPath $quarantineRoot -Recurse -Filter 'duplfinder-quarantine-manifest.json')
+    Assert-True -Condition ($manifests.Count -eq 1) -Message "Expected exactly one quarantine manifest, found $($manifests.Count)."
+    $manifestPath = $manifests[0].FullName
+    $manifest = Get-Content -LiteralPath $manifestPath -Raw | ConvertFrom-Json
+    $manifestEntries = @($manifest.entries)
+    Assert-True -Condition ([string]$manifest.schema -eq 'duplfinder.quarantine-manifest.v1') -Message 'Quarantine manifest schema is invalid.'
+    Assert-True -Condition ($manifestEntries.Count -eq $expectedMovedPaths.Count) -Message 'Quarantine manifest does not contain one entry per moved file.'
+    Assert-True -Condition ([string]$manifest.source_stage_plan_path -eq $stagePlanPath) -Message 'Quarantine manifest does not record the source stage-plan path.'
+    $script:QuarantineManifestPath = $manifestPath
+    $script:QuarantineSessionPath = [string]$manifest.quarantine_session_path
+
+    foreach ($path in $keepPaths) {
+        Assert-FileExists -Path $path -Message "Quarantine mode touched a KEEP path: $path"
+    }
+    foreach ($path in $expectedMovedPaths) {
+        $entry = Get-EntryByOriginalPath -Manifest $manifest -OriginalPath $path
+        Assert-True -Condition ($null -ne $entry) -Message "Manifest is missing moved original path: $path"
+        Assert-FileMissing -Path $path -Message "Quarantine mode did not move selected stage path: $path"
+        Assert-FileExists -Path ([string]$entry.quarantine_path) -Message "Quarantine file is missing for moved path: $path"
+    }
+    foreach ($path in @($missingKeepStage, $changedStage, $applySameSize1, $applySameSize2, $applySameName1, $applySameName2)) {
+        Assert-FileExists -Path $path -Message "Quarantine mode processed a skipped/non-plan path unexpectedly: $path"
+        $entry = Get-EntryByOriginalPath -Manifest $manifest -OriginalPath $path
+        Assert-True -Condition ($null -eq $entry) -Message "Manifest unexpectedly contains skipped/non-plan path: $path"
+    }
+
+    $undoDryRun = Invoke-DuplFinder -CliArgs @('undo-quarantine', '--manifest', $manifestPath, '--dry-run') -LogName 'undo-quarantine-dry-run.log'
+    Assert-True -Condition ($undoDryRun.ExitCode -eq 0) -Message 'undo-quarantine --dry-run failed.'
+    Assert-True -Condition ($undoDryRun.Output -match 'Mode:\s+dry-run') -Message 'undo-quarantine dry-run did not report dry-run mode.'
+    foreach ($path in $expectedMovedPaths) {
+        $entry = Get-EntryByOriginalPath -Manifest $manifest -OriginalPath $path
+        Assert-FileMissing -Path $path -Message "Undo dry-run restored an original stage path: $path"
+        Assert-FileExists -Path ([string]$entry.quarantine_path) -Message "Undo dry-run moved a quarantine path: $([string]$entry.quarantine_path)"
+    }
+
+    $collisionEntry = Get-EntryByOriginalPath -Manifest $manifest -OriginalPath $applyBetaStage
+    $hashMismatchEntry = Get-EntryByOriginalPath -Manifest $manifest -OriginalPath $applyGammaStage
+    Assert-True -Condition ($null -ne $collisionEntry) -Message 'Manifest is missing the collision test entry.'
+    Assert-True -Condition ($null -ne $hashMismatchEntry) -Message 'Manifest is missing the hash-mismatch test entry.'
+    New-TestFile -Path $applyBetaStage -Content 'collision original created before undo restore' | Out-Null
+    Set-Content -LiteralPath ([string]$hashMismatchEntry.quarantine_path) -Value 'tampered quarantine content; restore should skip' -Encoding UTF8
+
+    $undoRestore = Invoke-DuplFinder -CliArgs @('undo-quarantine', '--manifest', $manifestPath, '--restore') -LogName 'undo-quarantine-restore.log'
+    Assert-True -Condition ($undoRestore.ExitCode -eq 0) -Message 'undo-quarantine --restore failed.'
+    Assert-True -Condition ($undoRestore.Output -match 'Mode:\s+restore') -Message 'undo-quarantine restore did not report restore mode.'
+
+    foreach ($restoredPath in @($applyAlphaNested, $applyAlphaUnicode, $applyRootBStage)) {
+        $entry = Get-EntryByOriginalPath -Manifest $manifest -OriginalPath $restoredPath
+        Assert-FileExists -Path $restoredPath -Message "Undo restore did not restore expected path: $restoredPath"
+        Assert-FileMissing -Path ([string]$entry.quarantine_path) -Message "Undo restore left quarantine file behind for restored path: $([string]$entry.quarantine_path)"
+    }
+    Assert-FileExists -Path $applyBetaStage -Message 'Undo collision path should still exist at original location.'
+    Assert-True -Condition ((Get-Content -LiteralPath $applyBetaStage -Raw).Contains('collision original', [StringComparison]::Ordinal)) -Message 'Undo collision overwrote the existing original file.'
+    Assert-FileExists -Path ([string]$collisionEntry.quarantine_path) -Message 'Undo collision should leave quarantined file in place.'
+    Assert-FileMissing -Path $applyGammaStage -Message 'Undo hash mismatch should not restore the tampered quarantine file.'
+    Assert-FileExists -Path ([string]$hashMismatchEntry.quarantine_path) -Message 'Undo hash mismatch should leave tampered quarantine file in place.'
+
+    foreach ($path in $keepPaths + @($missingKeepStage, $changedStage, $applySameSize1, $applySameSize2, $applySameName1, $applySameName2)) {
+        Assert-FileExists -Path $path -Message "Apply/undo validation unexpectedly lost protected path: $path"
+    }
+
+    $script:ApplyStagePlanValidationResult = 'passed: dry-run, quarantine move, manifest, undo dry-run, restore, collision skip, and hash-mismatch skip validated'
+
     Write-Step 'Summary'
     Write-Host "Generated workspace path: $workspaceRoot"
     Write-Host "Parent WorkDir/base path: $parentPath"
@@ -592,8 +824,12 @@ try {
     Write-Host "Duplicate validation result: $script:DuplicateValidationResult"
     Write-Host "Prestage report validation result: $script:PrestageReportValidationResult"
     Write-Host "Multi-root validation result: $script:MultiRootValidationResult"
+    Write-Host "Apply stage plan validation result: $script:ApplyStagePlanValidationResult"
     Write-Host "Prestage report: $script:PrestageReportPath"
     Write-Host "Multi-root prestage report: $script:MultiRootPrestageReportPath"
+    Write-Host "Stage plan: $script:StagePlanPath"
+    Write-Host "Quarantine session: $script:QuarantineSessionPath"
+    Write-Host "Quarantine manifest: $script:QuarantineManifestPath"
     Write-Host "Clean DB validation result: $script:CleanDbValidationResult"
     Write-Host "Missing DB validation result: $script:MissingDbValidationResult"
     Write-Host 'Final PASS'
@@ -613,8 +849,12 @@ catch {
     Write-Host "Duplicate validation result: $script:DuplicateValidationResult"
     Write-Host "Prestage report validation result: $script:PrestageReportValidationResult"
     Write-Host "Multi-root validation result: $script:MultiRootValidationResult"
+    Write-Host "Apply stage plan validation result: $script:ApplyStagePlanValidationResult"
     Write-Host "Prestage report: $script:PrestageReportPath"
     Write-Host "Multi-root prestage report: $script:MultiRootPrestageReportPath"
+    Write-Host "Stage plan: $script:StagePlanPath"
+    Write-Host "Quarantine session: $script:QuarantineSessionPath"
+    Write-Host "Quarantine manifest: $script:QuarantineManifestPath"
     Write-Host "Clean DB validation result: $script:CleanDbValidationResult"
     Write-Host "Missing DB validation result: $script:MissingDbValidationResult"
     $exitCode = 1
