@@ -196,12 +196,14 @@ Komendy:
   clean-db [opcje]
 
 Scan:
+  scan <path> --db duplicates.db --threads auto
   scan "D:\" --db duplicates.db --threads auto
-  scan "D:\" --db duplicates.db --threads 8 --batch-size 5000
-  scan "D:\" --low-resource --threads 2 --batch-size 500 --channel-capacity 1000 --large-file-parallelism 1
-  scan "D:\" --low-resource --threads 1 --batch-size 250 --buffer-size 512KB
+  scan "C:\Users\You\Pictures" --db pictures.db --threads 4
+  scan ".\SomeFolder" --low-resource --threads 2 --batch-size 500 --channel-capacity 1000 --large-file-parallelism 1
+  scan ".\SomeFolder" --low-resource --threads 1 --batch-size 250 --buffer-size 512KB
 
 Opcje scan:
+  <path>                           Dowolny dysk lub katalog do skanowania
   --db <plik>                      Domyślnie duplicates.db
   --threads auto|1|2|4|8           Domyślnie max(1, CPU-1)
   --low-resource                   Mniejsze kolejki, batch i domyślnie max 2 workery
