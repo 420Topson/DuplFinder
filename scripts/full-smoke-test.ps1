@@ -14,6 +14,7 @@ $script:ProfileResults = New-Object System.Collections.Generic.List[string]
 $script:FirstScanResult = 'not run'
 $script:SecondScanResult = 'not run'
 $script:DuplicateValidationResult = 'not run'
+$script:PrestageReportValidationResult = 'not run'
 $script:CleanDbValidationResult = 'not run'
 $script:MissingDbValidationResult = 'not run'
 $script:EmptyFileBehavior = ''
@@ -285,6 +286,28 @@ function Validate-DuplicateRows {
     Assert-NoDuplicatePath -Rows $Rows -Path $CasePaths.SkippedExe -Message "$Context skipped .exe file was reported as an OK duplicate."
 }
 
+function Assert-PrestageReportHtml {
+    param(
+        [string]$Path,
+        [string]$KnownDuplicatePath
+    )
+
+    Assert-True -Condition (Test-Path -LiteralPath $Path) -Message "Prestage report HTML was not created: $Path"
+
+    $html = Get-Content -LiteralPath $Path -Raw
+    Assert-True -Condition ($html.Contains('duplfinder.stage-plan.v1', [StringComparison]::Ordinal)) -Message 'Prestage report is missing the stage-plan schema marker.'
+    Assert-True -Condition ($html.Contains('Export stage-plan.json', [StringComparison]::Ordinal)) -Message 'Prestage report is missing the export button text.'
+    Assert-True -Condition ($html.Contains('This report does not move or delete files. It only exports a stage plan.', [StringComparison]::Ordinal)) -Message 'Prestage report is missing the no move/delete safety warning.'
+    $jsonEscapedKnownPath = $KnownDuplicatePath.Replace('\', '\\')
+    Assert-True -Condition (($html.Contains($KnownDuplicatePath, [StringComparison]::Ordinal)) -or ($html.Contains($jsonEscapedKnownPath, [StringComparison]::Ordinal))) -Message 'Prestage report is missing a known duplicate path from the generated dataset.'
+    Assert-True -Condition (($html.Contains('#0f1115', [StringComparison]::Ordinal)) -or ($html.Contains('#171a21', [StringComparison]::Ordinal))) -Message 'Prestage report is missing expected dark theme color markers.'
+    Assert-True -Condition (-not $html.Contains('https://', [StringComparison]::OrdinalIgnoreCase)) -Message 'Prestage report should not reference https:// resources.'
+    Assert-True -Condition (-not $html.Contains('http://', [StringComparison]::OrdinalIgnoreCase)) -Message 'Prestage report should not reference http:// resources.'
+    Assert-True -Condition (-not $html.Contains('<script src=', [StringComparison]::OrdinalIgnoreCase)) -Message 'Prestage report should not load external scripts.'
+    Assert-True -Condition (-not [regex]::IsMatch($html, '<link\b', [System.Text.RegularExpressions.RegexOptions]::IgnoreCase)) -Message 'Prestage report should not depend on external linked CSS/resources.'
+    Assert-True -Condition (-not [regex]::IsMatch($html, '@import\b', [System.Text.RegularExpressions.RegexOptions]::IgnoreCase)) -Message 'Prestage report should not use external CSS imports.'
+}
+
 function Get-FirstMetric {
     param(
         [string]$Text,
@@ -469,6 +492,13 @@ try {
     Assert-True -Condition ($cacheDuplicates.ExitCode -eq 0) -Message 'duplicates command after cache scan failed.'
     Validate-DuplicateRows -Rows (Read-CsvSafe -Path $cacheCsv) -CasePaths $casePaths -AlphaCopies 3 -Context 'after cache'
 
+    Write-Step 'Prestage report behavior'
+    $prestageReportPath = Join-Path $outputRoot 'prestage-report.html'
+    $prestageReport = Invoke-DuplFinder -CliArgs @('prestage-report', '--db', $primaryDb, '--out', $prestageReportPath) -LogName 'prestage-report.log'
+    Assert-True -Condition ($prestageReport.ExitCode -eq 0) -Message 'prestage-report command failed.'
+    Assert-PrestageReportHtml -Path $prestageReportPath -KnownDuplicatePath $alpha1
+    $script:PrestageReportValidationResult = "passed: generated local-only HTML report at $prestageReportPath"
+
     Write-Step 'Clean DB behavior'
     Remove-Item -LiteralPath $alpha3 -Force
     $clean = Invoke-DuplFinder -CliArgs @('clean-db', '--db', $primaryDb, '--batch-size', '2') -LogName 'clean-db.log'
@@ -503,6 +533,7 @@ try {
     Write-Host "First scan result: $script:FirstScanResult"
     Write-Host "Second scan/cache result: $script:SecondScanResult"
     Write-Host "Duplicate validation result: $script:DuplicateValidationResult"
+    Write-Host "Prestage report validation result: $script:PrestageReportValidationResult"
     Write-Host "Clean DB validation result: $script:CleanDbValidationResult"
     Write-Host "Missing DB validation result: $script:MissingDbValidationResult"
     Write-Host 'Final PASS'
@@ -520,6 +551,7 @@ catch {
     Write-Host "First scan result: $script:FirstScanResult"
     Write-Host "Second scan/cache result: $script:SecondScanResult"
     Write-Host "Duplicate validation result: $script:DuplicateValidationResult"
+    Write-Host "Prestage report validation result: $script:PrestageReportValidationResult"
     Write-Host "Clean DB validation result: $script:CleanDbValidationResult"
     Write-Host "Missing DB validation result: $script:MissingDbValidationResult"
     $exitCode = 1
