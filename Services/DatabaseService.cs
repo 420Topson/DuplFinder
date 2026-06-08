@@ -7,6 +7,16 @@ namespace DuplicateFinder.Services;
 
 public sealed class DatabaseService
 {
+    public void EnsureDatabaseExists(string dbPath)
+    {
+        if (string.IsNullOrWhiteSpace(dbPath))
+            throw new ArgumentException("Database path is empty.", nameof(dbPath));
+
+        var fullPath = Path.GetFullPath(dbPath);
+        if (!File.Exists(fullPath))
+            throw new FileNotFoundException($"Database file not found: {fullPath}. Run scan first or pass --db to an existing database.", fullPath);
+    }
+
     public async Task InitializeAsync(string dbPath, CancellationToken ct)
     {
         await using var connection = OpenConnection(dbPath);
@@ -119,8 +129,6 @@ LIMIT 1;";
 
     private async Task UpsertBatchAsync(SqliteConnection connection, List<FileHashResult> batch, CancellationToken ct)
     {
-        _ = BatchBucketizer.BuildBuckets(batch);
-
         await using var tx = await connection.BeginTransactionAsync(ct);
         await using var cmd = connection.CreateCommand();
         cmd.Transaction = (SqliteTransaction)tx;
