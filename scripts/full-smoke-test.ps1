@@ -31,6 +31,9 @@ $script:EmptyFileBehavior = ''
 $script:FailureMessage = ''
 $script:ProjectFullPath = ''
 $script:LogsRoot = ''
+$script:PolishFolderName = -join @('Za', [char]0x017C, [char]0x00F3, [char]0x0142, [char]0x0107, ' g', [char]0x0119, [char]0x015B, 'l', [char]0x0105, ' ja', [char]0x017A, [char]0x0144)
+$script:PolishDuplicateFileName = -join @('duplikat_', [char]0x0105, [char]0x0119, [char]0x015B, [char]0x0107, '.txt')
+$script:PolishStageFileName = -join @('alpha_stage_', [char]0x0105, [char]0x0119, [char]0x015B, [char]0x0107, '.txt')
 
 function Write-Step {
     param([string]$Message)
@@ -48,6 +51,42 @@ function Assert-True {
     if (-not $Condition) {
         throw $Message
     }
+}
+
+function Test-StringContains {
+    param(
+        [string]$Value,
+        [string]$Needle,
+        [StringComparison]$Comparison = [StringComparison]::Ordinal
+    )
+
+    if ($null -eq $Value) {
+        return $false
+    }
+
+    return $Value.IndexOf($Needle, $Comparison) -ge 0
+}
+
+function ConvertTo-TestLiteralPath {
+    param([string]$Path)
+
+    if ([string]::IsNullOrWhiteSpace($Path)) {
+        return $Path
+    }
+
+    if ($Path.StartsWith('\\?\', [StringComparison]::Ordinal)) {
+        return $Path
+    }
+
+    if ($Path.StartsWith('\\', [StringComparison]::Ordinal)) {
+        return '\\?\UNC\' + $Path.Substring(2)
+    }
+
+    if ([System.IO.Path]::IsPathRooted($Path)) {
+        return '\\?\' + [System.IO.Path]::GetFullPath($Path)
+    }
+
+    return $Path
 }
 
 function Get-DefaultParentWorkDir {
@@ -76,8 +115,8 @@ function Test-IsDefaultScanExcludedPath {
     param([string]$Path)
 
     $normalized = $Path.Replace([System.IO.Path]::AltDirectorySeparatorChar, [System.IO.Path]::DirectorySeparatorChar).TrimEnd([System.IO.Path]::DirectorySeparatorChar)
-    return $normalized.Contains('\AppData\Local\Temp', [StringComparison]::OrdinalIgnoreCase) -or
-        $normalized.Contains('\AppData\Local\Microsoft\Windows', [StringComparison]::OrdinalIgnoreCase)
+    return (Test-StringContains -Value $normalized -Needle '\AppData\Local\Temp' -Comparison ([StringComparison]::OrdinalIgnoreCase)) -or
+        (Test-StringContains -Value $normalized -Needle '\AppData\Local\Microsoft\Windows' -Comparison ([StringComparison]::OrdinalIgnoreCase))
 }
 
 function New-TestFileBytes {
@@ -109,7 +148,7 @@ function New-TestFile {
 function Get-FileSha256 {
     param([string]$Path)
 
-    return (Get-FileHash -LiteralPath $Path -Algorithm SHA256).Hash
+    return (Get-FileHash -LiteralPath (ConvertTo-TestLiteralPath -Path $Path) -Algorithm SHA256).Hash
 }
 
 function Write-JsonFile {
@@ -124,7 +163,7 @@ function Write-JsonFile {
     }
 
     $json = $Value | ConvertTo-Json -Depth 12
-    Set-Content -LiteralPath $Path -Value $json -Encoding UTF8
+    Set-Content -LiteralPath (ConvertTo-TestLiteralPath -Path $Path) -Value $json -Encoding UTF8
 }
 
 function Assert-FileExists {
@@ -133,7 +172,7 @@ function Assert-FileExists {
         [string]$Message
     )
 
-    Assert-True -Condition (Test-Path -LiteralPath $Path -PathType Leaf) -Message $Message
+    Assert-True -Condition ([System.IO.File]::Exists((ConvertTo-TestLiteralPath -Path $Path))) -Message $Message
 }
 
 function Assert-FileMissing {
@@ -142,7 +181,8 @@ function Assert-FileMissing {
         [string]$Message
     )
 
-    Assert-True -Condition (-not (Test-Path -LiteralPath $Path)) -Message $Message
+    $literalPath = ConvertTo-TestLiteralPath -Path $Path
+    Assert-True -Condition (-not ([System.IO.File]::Exists($literalPath) -or [System.IO.Directory]::Exists($literalPath))) -Message $Message
 }
 
 function Get-EntryByOriginalPath {
@@ -175,8 +215,15 @@ function Invoke-DuplFinder {
         '--'
     ) + $CliArgs
 
-    $output = & dotnet @dotnetArgs 2>&1 | Out-String
-    $exitCode = $LASTEXITCODE
+    $previousErrorActionPreference = $ErrorActionPreference
+    $ErrorActionPreference = 'Continue'
+    try {
+        $output = & dotnet @dotnetArgs 2>&1 | ForEach-Object { $_.ToString() } | Out-String
+        $exitCode = $LASTEXITCODE
+    }
+    finally {
+        $ErrorActionPreference = $previousErrorActionPreference
+    }
 
     $logPath = Join-Path $script:LogsRoot $LogName
     $logText = @(
@@ -359,12 +406,12 @@ function Assert-PrestageReportHtml {
     $reportData = $reportDataMatch.Groups['json'].Value | ConvertFrom-Json
     $reportPaths = @($reportData.groups | ForEach-Object { $_.files } | ForEach-Object { [string]$_.path })
 
-    Assert-True -Condition ($html.Contains('duplfinder.stage-plan.v1', [StringComparison]::Ordinal)) -Message 'Prestage report is missing the stage-plan schema marker.'
-    Assert-True -Condition ($html.Contains('Export stage-plan.json', [StringComparison]::Ordinal)) -Message 'Prestage report is missing the export button text.'
-    Assert-True -Condition ($html.Contains('Files in duplicate groups', [StringComparison]::Ordinal)) -Message 'Prestage report is missing the files-in-duplicate-groups summary label.'
-    Assert-True -Condition ($html.Contains('Redundant files', [StringComparison]::Ordinal)) -Message 'Prestage report is missing the redundant files summary label.'
-    Assert-True -Condition ($html.Contains('This report does not move or delete files. It only exports a stage plan.', [StringComparison]::Ordinal)) -Message 'Prestage report is missing the no move/delete safety warning.'
-    Assert-True -Condition ($html.Contains('stageAllExceptKeep(group, groupState, index)', [StringComparison]::Ordinal)) -Message 'Prestage report KEEP handler should stage all non-KEEP files in the changed group.'
+    Assert-True -Condition (Test-StringContains -Value $html -Needle 'duplfinder.stage-plan.v1') -Message 'Prestage report is missing the stage-plan schema marker.'
+    Assert-True -Condition (Test-StringContains -Value $html -Needle 'Export stage-plan.json') -Message 'Prestage report is missing the export button text.'
+    Assert-True -Condition (Test-StringContains -Value $html -Needle 'Files in duplicate groups') -Message 'Prestage report is missing the files-in-duplicate-groups summary label.'
+    Assert-True -Condition (Test-StringContains -Value $html -Needle 'Redundant files') -Message 'Prestage report is missing the redundant files summary label.'
+    Assert-True -Condition (Test-StringContains -Value $html -Needle 'This report does not move or delete files. It only exports a stage plan.') -Message 'Prestage report is missing the no move/delete safety warning.'
+    Assert-True -Condition (Test-StringContains -Value $html -Needle 'stageAllExceptKeep(group, groupState, index)') -Message 'Prestage report KEEP handler should stage all non-KEEP files in the changed group.'
 
     foreach ($knownPath in $KnownDuplicatePaths) {
         Assert-True -Condition (Test-PathInList -Paths $reportPaths -Path $knownPath) -Message "Prestage report is missing expected duplicate path: $knownPath"
@@ -374,10 +421,10 @@ function Assert-PrestageReportHtml {
         Assert-True -Condition (-not (Test-PathInList -Paths $reportPaths -Path $absentPath)) -Message "Prestage report unexpectedly contains a skipped/non-duplicate path: $absentPath"
     }
 
-    Assert-True -Condition (($html.Contains('#0f1115', [StringComparison]::Ordinal)) -or ($html.Contains('#171a21', [StringComparison]::Ordinal))) -Message 'Prestage report is missing expected dark theme color markers.'
-    Assert-True -Condition (-not $html.Contains('https://', [StringComparison]::OrdinalIgnoreCase)) -Message 'Prestage report should not reference https:// resources.'
-    Assert-True -Condition (-not $html.Contains('http://', [StringComparison]::OrdinalIgnoreCase)) -Message 'Prestage report should not reference http:// resources.'
-    Assert-True -Condition (-not $html.Contains('<script src=', [StringComparison]::OrdinalIgnoreCase)) -Message 'Prestage report should not load external scripts.'
+    Assert-True -Condition ((Test-StringContains -Value $html -Needle '#0f1115') -or (Test-StringContains -Value $html -Needle '#171a21')) -Message 'Prestage report is missing expected dark theme color markers.'
+    Assert-True -Condition (-not (Test-StringContains -Value $html -Needle 'https://' -Comparison ([StringComparison]::OrdinalIgnoreCase))) -Message 'Prestage report should not reference https:// resources.'
+    Assert-True -Condition (-not (Test-StringContains -Value $html -Needle 'http://' -Comparison ([StringComparison]::OrdinalIgnoreCase))) -Message 'Prestage report should not reference http:// resources.'
+    Assert-True -Condition (-not (Test-StringContains -Value $html -Needle '<script src=' -Comparison ([StringComparison]::OrdinalIgnoreCase))) -Message 'Prestage report should not load external scripts.'
     Assert-True -Condition (-not [regex]::IsMatch($html, '<link\b', [System.Text.RegularExpressions.RegexOptions]::IgnoreCase)) -Message 'Prestage report should not depend on external linked CSS/resources.'
     Assert-True -Condition (-not [regex]::IsMatch($html, '@import\b', [System.Text.RegularExpressions.RegexOptions]::IgnoreCase)) -Message 'Prestage report should not use external CSS imports.'
 }
@@ -453,7 +500,7 @@ try {
 
     $alpha1 = New-TestFile -Path (Join-Path (Join-Path $datasetRoot 'Alpha One') 'alpha-copy-one.txt') -Content $alphaContent
     $alpha2 = New-TestFile -Path (Join-Path (Join-Path (Join-Path (Join-Path $datasetRoot 'Nested') 'Level 1') 'Level 2') 'Level 3\renamed-alpha.md') -Content $alphaContent
-    $alpha3 = New-TestFile -Path (Join-Path (Join-Path $datasetRoot 'Zażółć gęślą jaźń') 'duplikat_ąęść.txt') -Content $alphaContent
+    $alpha3 = New-TestFile -Path (Join-Path (Join-Path $datasetRoot $script:PolishFolderName) $script:PolishDuplicateFileName) -Content $alphaContent
 
     $beta1 = New-TestFile -Path (Join-Path (Join-Path $datasetRoot 'Beta A') 'report.txt') -Content $betaContent
     $beta2 = New-TestFile -Path (Join-Path (Join-Path $datasetRoot 'Beta B') 'report.txt') -Content $betaContent
@@ -650,7 +697,7 @@ try {
 
     $applyAlphaKeep = New-TestFile -Path (Join-Path (Join-Path $applyRoot 'Alpha Keep') 'alpha-keep.txt') -Content $applyAlphaContent
     $applyAlphaNested = New-TestFile -Path (Join-Path (Join-Path (Join-Path (Join-Path $applyRoot 'Alpha Nested') 'Level 1') 'Level 2') 'Level 3\alpha-stage-nested.md') -Content $applyAlphaContent
-    $applyAlphaUnicode = New-TestFile -Path (Join-Path (Join-Path $applyRoot 'Zażółć gęślą jaźń') 'alpha_stage_ąęść.txt') -Content $applyAlphaContent
+    $applyAlphaUnicode = New-TestFile -Path (Join-Path (Join-Path $applyRoot $script:PolishFolderName) $script:PolishStageFileName) -Content $applyAlphaContent
 
     $applyBetaKeep = New-TestFile -Path (Join-Path (Join-Path $applyRoot 'Beta Keep') 'report.txt') -Content $applyBetaContent
     $applyBetaStage = New-TestFile -Path (Join-Path (Join-Path $applyRoot 'Beta Stage') 'report.txt') -Content $applyBetaContent
@@ -752,9 +799,10 @@ try {
     Assert-True -Condition ($applyQuarantine.ExitCode -eq 0) -Message 'apply-stage-plan quarantine mode failed.'
     Assert-True -Condition ($applyQuarantine.Output -match 'Mode:\s+quarantine') -Message 'apply-stage-plan quarantine mode did not report quarantine mode.'
 
-    $manifests = @(Get-ChildItem -LiteralPath $quarantineRoot -Recurse -Filter 'duplfinder-quarantine-manifest.json')
-    Assert-True -Condition ($manifests.Count -eq 1) -Message "Expected exactly one quarantine manifest, found $($manifests.Count)."
-    $manifestPath = $manifests[0].FullName
+    $manifestMatch = [regex]::Match($applyQuarantine.Output, '(?m)^Manifest:\s+(.+duplfinder-quarantine-manifest\.json)\s*$')
+    Assert-True -Condition $manifestMatch.Success -Message 'apply-stage-plan quarantine output did not include a manifest path.'
+    $manifestPath = $manifestMatch.Groups[1].Value.Trim()
+    Assert-FileExists -Path $manifestPath -Message 'apply-stage-plan quarantine did not create the reported manifest file.'
     $manifest = Get-Content -LiteralPath $manifestPath -Raw | ConvertFrom-Json
     $manifestEntries = @($manifest.entries)
     Assert-True -Condition ([string]$manifest.schema -eq 'duplfinder.quarantine-manifest.v1') -Message 'Quarantine manifest schema is invalid.'
@@ -792,7 +840,7 @@ try {
     Assert-True -Condition ($null -ne $collisionEntry) -Message 'Manifest is missing the collision test entry.'
     Assert-True -Condition ($null -ne $hashMismatchEntry) -Message 'Manifest is missing the hash-mismatch test entry.'
     New-TestFile -Path $applyBetaStage -Content 'collision original created before undo restore' | Out-Null
-    Set-Content -LiteralPath ([string]$hashMismatchEntry.quarantine_path) -Value 'tampered quarantine content; restore should skip' -Encoding UTF8
+    Set-Content -LiteralPath (ConvertTo-TestLiteralPath -Path ([string]$hashMismatchEntry.quarantine_path)) -Value 'tampered quarantine content; restore should skip' -Encoding UTF8
 
     $undoRestore = Invoke-DuplFinder -CliArgs @('undo-quarantine', '--manifest', $manifestPath, '--restore') -LogName 'undo-quarantine-restore.log'
     Assert-True -Condition ($undoRestore.ExitCode -eq 0) -Message 'undo-quarantine --restore failed.'
@@ -804,7 +852,7 @@ try {
         Assert-FileMissing -Path ([string]$entry.quarantine_path) -Message "Undo restore left quarantine file behind for restored path: $([string]$entry.quarantine_path)"
     }
     Assert-FileExists -Path $applyBetaStage -Message 'Undo collision path should still exist at original location.'
-    Assert-True -Condition ((Get-Content -LiteralPath $applyBetaStage -Raw).Contains('collision original', [StringComparison]::Ordinal)) -Message 'Undo collision overwrote the existing original file.'
+    Assert-True -Condition (Test-StringContains -Value (Get-Content -LiteralPath (ConvertTo-TestLiteralPath -Path $applyBetaStage) -Raw) -Needle 'collision original') -Message 'Undo collision overwrote the existing original file.'
     Assert-FileExists -Path ([string]$collisionEntry.quarantine_path) -Message 'Undo collision should leave quarantined file in place.'
     Assert-FileMissing -Path $applyGammaStage -Message 'Undo hash mismatch should not restore the tampered quarantine file.'
     Assert-FileExists -Path ([string]$hashMismatchEntry.quarantine_path) -Message 'Undo hash mismatch should leave tampered quarantine file in place.'
@@ -818,9 +866,10 @@ try {
     $purgeApply = Invoke-DuplFinder -CliArgs @('apply-stage-plan', '--plan', $stagePlanPath, '--quarantine', $purgeQuarantineRoot) -LogName 'apply-stage-plan-purge-quarantine.log'
     Assert-True -Condition ($purgeApply.ExitCode -eq 0) -Message 'apply-stage-plan quarantine mode failed for purge validation.'
 
-    $purgeBaseManifests = @(Get-ChildItem -LiteralPath $purgeQuarantineRoot -Recurse -Filter 'duplfinder-quarantine-manifest.json')
-    Assert-True -Condition ($purgeBaseManifests.Count -eq 1) -Message "Expected exactly one purge quarantine manifest, found $($purgeBaseManifests.Count)."
-    $purgeBaseManifestPath = $purgeBaseManifests[0].FullName
+    $purgeManifestMatch = [regex]::Match($purgeApply.Output, '(?m)^Manifest:\s+(.+duplfinder-quarantine-manifest\.json)\s*$')
+    Assert-True -Condition $purgeManifestMatch.Success -Message 'apply-stage-plan purge setup output did not include a manifest path.'
+    $purgeBaseManifestPath = $purgeManifestMatch.Groups[1].Value.Trim()
+    Assert-FileExists -Path $purgeBaseManifestPath -Message 'apply-stage-plan purge setup did not create the reported manifest file.'
     $purgeBaseManifest = Get-Content -LiteralPath $purgeBaseManifestPath -Raw | ConvertFrom-Json
     $purgeBaseEntries = @($purgeBaseManifest.entries)
     Assert-True -Condition ($purgeBaseEntries.Count -ge 3) -Message 'Purge validation expected at least three freshly quarantined files.'
@@ -838,8 +887,8 @@ try {
     $purgeInvalidHashFile = New-TestFile -Path (Join-Path $purgeSessionPath 'invalid-hash-listed.txt') -Content 'invalid sha listed file should not be deleted'
     $purgeEscapeFile = New-TestFile -Path (Join-Path $applyStageOutput 'escape-target-outside-quarantine.txt') -Content 'escape target should not be deleted'
 
-    Remove-Item -LiteralPath ([string]$purgeMissingEntry.quarantine_path) -Force
-    Set-Content -LiteralPath ([string]$purgeTamperedEntry.quarantine_path) -Value 'tampered before purge; hash mismatch should skip' -Encoding UTF8
+    Remove-Item -LiteralPath (ConvertTo-TestLiteralPath -Path ([string]$purgeMissingEntry.quarantine_path)) -Force
+    Set-Content -LiteralPath (ConvertTo-TestLiteralPath -Path ([string]$purgeTamperedEntry.quarantine_path)) -Value 'tampered before purge; hash mismatch should skip' -Encoding UTF8
     New-TestFile -Path ([string]$purgeValidEntry.original_path) -Content 'original placeholder created before purge; must survive' | Out-Null
 
     $purgeManifestPath = Join-Path $applyStageOutput 'purge-hostile-manifest.json'
@@ -955,7 +1004,7 @@ try {
 
     Assert-FileMissing -Path ([string]$purgeValidEntry.quarantine_path) -Message 'Purge confirm did not delete the validated quarantine file.'
     Assert-FileExists -Path ([string]$purgeValidEntry.original_path) -Message 'Purge confirm deleted or touched original_path.'
-    Assert-True -Condition ((Get-Content -LiteralPath ([string]$purgeValidEntry.original_path) -Raw).Contains('original placeholder', [StringComparison]::Ordinal)) -Message 'Purge confirm modified original_path.'
+    Assert-True -Condition (Test-StringContains -Value (Get-Content -LiteralPath (ConvertTo-TestLiteralPath -Path ([string]$purgeValidEntry.original_path)) -Raw) -Needle 'original placeholder') -Message 'Purge confirm modified original_path.'
     Assert-FileExists -Path ([string]$purgeTamperedEntry.quarantine_path) -Message 'Purge confirm deleted the tampered quarantine file.'
     Assert-FileExists -Path $purgeNegativeFile -Message 'Purge confirm deleted the negative-size manifest file.'
     Assert-FileExists -Path $purgeInvalidHashFile -Message 'Purge confirm deleted the invalid-sha manifest file.'
