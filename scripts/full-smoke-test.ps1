@@ -19,9 +19,12 @@ $script:PrestageReportPath = ''
 $script:MultiRootValidationResult = 'not run'
 $script:MultiRootPrestageReportPath = ''
 $script:ApplyStagePlanValidationResult = 'not run'
+$script:PurgeValidationResult = 'not run'
 $script:StagePlanPath = ''
 $script:QuarantineSessionPath = ''
 $script:QuarantineManifestPath = ''
+$script:PurgeManifestPath = ''
+$script:PurgeLogPath = ''
 $script:CleanDbValidationResult = 'not run'
 $script:MissingDbValidationResult = 'not run'
 $script:EmptyFileBehavior = ''
@@ -810,7 +813,160 @@ try {
         Assert-FileExists -Path $path -Message "Apply/undo validation unexpectedly lost protected path: $path"
     }
 
+    Write-Step 'Purge quarantine and hostile manifest input'
+    $purgeQuarantineRoot = Join-Path $applyStageOutput 'purge-quarantine'
+    $purgeApply = Invoke-DuplFinder -CliArgs @('apply-stage-plan', '--plan', $stagePlanPath, '--quarantine', $purgeQuarantineRoot) -LogName 'apply-stage-plan-purge-quarantine.log'
+    Assert-True -Condition ($purgeApply.ExitCode -eq 0) -Message 'apply-stage-plan quarantine mode failed for purge validation.'
+
+    $purgeBaseManifests = @(Get-ChildItem -LiteralPath $purgeQuarantineRoot -Recurse -Filter 'duplfinder-quarantine-manifest.json')
+    Assert-True -Condition ($purgeBaseManifests.Count -eq 1) -Message "Expected exactly one purge quarantine manifest, found $($purgeBaseManifests.Count)."
+    $purgeBaseManifestPath = $purgeBaseManifests[0].FullName
+    $purgeBaseManifest = Get-Content -LiteralPath $purgeBaseManifestPath -Raw | ConvertFrom-Json
+    $purgeBaseEntries = @($purgeBaseManifest.entries)
+    Assert-True -Condition ($purgeBaseEntries.Count -ge 3) -Message 'Purge validation expected at least three freshly quarantined files.'
+
+    $purgeValidEntry = Get-EntryByOriginalPath -Manifest $purgeBaseManifest -OriginalPath $applyAlphaNested
+    $purgeMissingEntry = Get-EntryByOriginalPath -Manifest $purgeBaseManifest -OriginalPath $applyAlphaUnicode
+    $purgeTamperedEntry = Get-EntryByOriginalPath -Manifest $purgeBaseManifest -OriginalPath $applyRootBStage
+    Assert-True -Condition ($null -ne $purgeValidEntry) -Message 'Purge manifest is missing the valid purge entry.'
+    Assert-True -Condition ($null -ne $purgeMissingEntry) -Message 'Purge manifest is missing the missing-file entry.'
+    Assert-True -Condition ($null -ne $purgeTamperedEntry) -Message 'Purge manifest is missing the tampered-file entry.'
+
+    $purgeSessionPath = [string]$purgeBaseManifest.quarantine_session_path
+    $purgeStrayFile = New-TestFile -Path (Join-Path $purgeSessionPath 'stray-not-listed.txt') -Content 'not listed in manifest; purge must not delete this file'
+    $purgeNegativeFile = New-TestFile -Path (Join-Path $purgeSessionPath 'negative-size-listed.txt') -Content 'negative size listed file should not be deleted'
+    $purgeInvalidHashFile = New-TestFile -Path (Join-Path $purgeSessionPath 'invalid-hash-listed.txt') -Content 'invalid sha listed file should not be deleted'
+    $purgeEscapeFile = New-TestFile -Path (Join-Path $applyStageOutput 'escape-target-outside-quarantine.txt') -Content 'escape target should not be deleted'
+
+    Remove-Item -LiteralPath ([string]$purgeMissingEntry.quarantine_path) -Force
+    Set-Content -LiteralPath ([string]$purgeTamperedEntry.quarantine_path) -Value 'tampered before purge; hash mismatch should skip' -Encoding UTF8
+    New-TestFile -Path ([string]$purgeValidEntry.original_path) -Content 'original placeholder created before purge; must survive' | Out-Null
+
+    $purgeManifestPath = Join-Path $applyStageOutput 'purge-hostile-manifest.json'
+    $purgeManifestForTest = [ordered]@{
+        schema = 'duplfinder.quarantine-manifest.v1'
+        created_utc = [string]$purgeBaseManifest.created_utc
+        source_stage_plan_path = [string]$purgeBaseManifest.source_stage_plan_path
+        quarantine_root_path = [string]$purgeBaseManifest.quarantine_root_path
+        quarantine_session_path = [string]$purgeBaseManifest.quarantine_session_path
+        tool_version = [string]$purgeBaseManifest.tool_version
+        entries = @(
+            [ordered]@{
+                original_path = [string]$purgeValidEntry.original_path
+                quarantine_path = [string]$purgeValidEntry.quarantine_path
+                size = [int64]$purgeValidEntry.size
+                sha256 = [string]$purgeValidEntry.sha256
+                group_number = [int]$purgeValidEntry.group_number
+                group_hash = [string]$purgeValidEntry.group_hash
+                moved_utc = [string]$purgeValidEntry.moved_utc
+                status = 'moved'
+            },
+            [ordered]@{
+                original_path = [string]$purgeMissingEntry.original_path
+                quarantine_path = [string]$purgeMissingEntry.quarantine_path
+                size = [int64]$purgeMissingEntry.size
+                sha256 = [string]$purgeMissingEntry.sha256
+                group_number = [int]$purgeMissingEntry.group_number
+                group_hash = [string]$purgeMissingEntry.group_hash
+                moved_utc = [string]$purgeMissingEntry.moved_utc
+                status = 'moved'
+            },
+            [ordered]@{
+                original_path = [string]$purgeTamperedEntry.original_path
+                quarantine_path = [string]$purgeTamperedEntry.quarantine_path
+                size = [int64]$purgeTamperedEntry.size
+                sha256 = [string]$purgeTamperedEntry.sha256
+                group_number = [int]$purgeTamperedEntry.group_number
+                group_hash = [string]$purgeTamperedEntry.group_hash
+                moved_utc = [string]$purgeTamperedEntry.moved_utc
+                status = 'moved'
+            },
+            [ordered]@{
+                original_path = (Join-Path $applyRoot 'Hostile\escape-original.txt')
+                quarantine_path = $purgeEscapeFile
+                size = (Get-Item -LiteralPath $purgeEscapeFile).Length
+                sha256 = Get-FileSha256 -Path $purgeEscapeFile
+                group_number = 9001
+                group_hash = Get-FileSha256 -Path $purgeEscapeFile
+                moved_utc = (Get-Date).ToUniversalTime().ToString('O')
+                status = 'moved'
+            },
+            [ordered]@{
+                original_path = (Join-Path $applyRoot 'Hostile\negative-original.txt')
+                quarantine_path = $purgeNegativeFile
+                size = -1
+                sha256 = Get-FileSha256 -Path $purgeNegativeFile
+                group_number = 9002
+                group_hash = Get-FileSha256 -Path $purgeNegativeFile
+                moved_utc = (Get-Date).ToUniversalTime().ToString('O')
+                status = 'moved'
+            },
+            [ordered]@{
+                original_path = (Join-Path $applyRoot 'Hostile\invalid-sha-original.txt')
+                quarantine_path = $purgeInvalidHashFile
+                size = (Get-Item -LiteralPath $purgeInvalidHashFile).Length
+                sha256 = 'not-a-valid-sha256'
+                group_number = 9003
+                group_hash = Get-FileSha256 -Path $purgeInvalidHashFile
+                moved_utc = (Get-Date).ToUniversalTime().ToString('O')
+                status = 'moved'
+            }
+        )
+    }
+    Write-JsonFile -Path $purgeManifestPath -Value $purgeManifestForTest
+    $script:PurgeManifestPath = $purgeManifestPath
+    $script:QuarantineSessionPath = $purgeSessionPath
+
+    $purgeDryRun = Invoke-DuplFinder -CliArgs @('purge-quarantine', '--manifest', $purgeManifestPath, '--dry-run') -LogName 'purge-quarantine-dry-run.log'
+    Assert-True -Condition ($purgeDryRun.ExitCode -eq 0) -Message 'purge-quarantine --dry-run failed.'
+    Assert-True -Condition ($purgeDryRun.Output -match 'Mode:\s+dry-run') -Message 'purge-quarantine dry-run did not report dry-run mode.'
+    Assert-True -Condition ($purgeDryRun.Output -match 'Manifest entries:\s+6') -Message 'purge-quarantine dry-run did not report expected manifest entry count.'
+    Assert-True -Condition ($purgeDryRun.Output -match 'Eligible entries:\s+6') -Message 'purge-quarantine dry-run did not report expected eligible entry count.'
+    Assert-True -Condition ($purgeDryRun.Output -match 'Planned:\s+1') -Message 'purge-quarantine dry-run did not report expected planned count.'
+    Assert-FileExists -Path ([string]$purgeValidEntry.quarantine_path) -Message 'Purge dry-run deleted the valid quarantine file.'
+    Assert-FileExists -Path ([string]$purgeTamperedEntry.quarantine_path) -Message 'Purge dry-run deleted the tampered quarantine file.'
+    Assert-FileExists -Path $purgeStrayFile -Message 'Purge dry-run deleted a file not listed in the manifest.'
+    Assert-FileExists -Path $purgeEscapeFile -Message 'Purge dry-run deleted an escaping manifest path.'
+
+    $purgeBothFlags = Invoke-DuplFinder -CliArgs @('purge-quarantine', '--manifest', $purgeManifestPath, '--dry-run', '--confirm-purge') -LogName 'purge-quarantine-conflicting-flags.log'
+    Assert-True -Condition ($purgeBothFlags.ExitCode -ne 0) -Message 'purge-quarantine accepted --dry-run with --confirm-purge.'
+
+    $invalidSchemaManifestPath = Join-Path $applyStageOutput 'purge-invalid-schema.json'
+    Write-JsonFile -Path $invalidSchemaManifestPath -Value ([ordered]@{ schema = 'invalid'; quarantine_root_path = $purgeQuarantineRoot; quarantine_session_path = $purgeSessionPath; entries = @() })
+    $invalidSchema = Invoke-DuplFinder -CliArgs @('purge-quarantine', '--manifest', $invalidSchemaManifestPath, '--dry-run') -LogName 'purge-invalid-schema.log'
+    Assert-True -Condition ($invalidSchema.ExitCode -ne 0) -Message 'purge-quarantine accepted an invalid manifest schema.'
+
+    $missingFieldsManifestPath = Join-Path $applyStageOutput 'purge-missing-fields.json'
+    Write-JsonFile -Path $missingFieldsManifestPath -Value ([ordered]@{ schema = 'duplfinder.quarantine-manifest.v1' })
+    $missingFields = Invoke-DuplFinder -CliArgs @('purge-quarantine', '--manifest', $missingFieldsManifestPath, '--dry-run') -LogName 'purge-missing-fields.log'
+    Assert-True -Condition ($missingFields.ExitCode -ne 0) -Message 'purge-quarantine accepted a manifest with missing required fields.'
+
+    $malformedManifestPath = Join-Path $applyStageOutput 'purge-malformed.json'
+    Set-Content -LiteralPath $malformedManifestPath -Value '{ malformed json' -Encoding UTF8
+    $malformed = Invoke-DuplFinder -CliArgs @('purge-quarantine', '--manifest', $malformedManifestPath, '--dry-run') -LogName 'purge-malformed-json.log'
+    Assert-True -Condition ($malformed.ExitCode -ne 0) -Message 'purge-quarantine accepted malformed JSON.'
+
+    $purgeConfirm = Invoke-DuplFinder -CliArgs @('purge-quarantine', '--manifest', $purgeManifestPath, '--confirm-purge') -LogName 'purge-quarantine-confirm.log'
+    Assert-True -Condition ($purgeConfirm.ExitCode -eq 0) -Message 'purge-quarantine --confirm-purge failed.'
+    Assert-True -Condition ($purgeConfirm.Output -match 'Mode:\s+purge') -Message 'purge-quarantine confirm did not report purge mode.'
+    Assert-True -Condition ($purgeConfirm.Output -match 'Purged:\s+1') -Message 'purge-quarantine confirm did not purge exactly one validated quarantine file.'
+    Assert-True -Condition ($purgeConfirm.Output -match 'Skipped:\s+5') -Message 'purge-quarantine confirm did not skip the expected hostile/missing/tampered entries.'
+    $script:PurgeLogPath = $purgeConfirm.LogPath
+
+    Assert-FileMissing -Path ([string]$purgeValidEntry.quarantine_path) -Message 'Purge confirm did not delete the validated quarantine file.'
+    Assert-FileExists -Path ([string]$purgeValidEntry.original_path) -Message 'Purge confirm deleted or touched original_path.'
+    Assert-True -Condition ((Get-Content -LiteralPath ([string]$purgeValidEntry.original_path) -Raw).Contains('original placeholder', [StringComparison]::Ordinal)) -Message 'Purge confirm modified original_path.'
+    Assert-FileExists -Path ([string]$purgeTamperedEntry.quarantine_path) -Message 'Purge confirm deleted the tampered quarantine file.'
+    Assert-FileExists -Path $purgeNegativeFile -Message 'Purge confirm deleted the negative-size manifest file.'
+    Assert-FileExists -Path $purgeInvalidHashFile -Message 'Purge confirm deleted the invalid-sha manifest file.'
+    Assert-FileExists -Path $purgeStrayFile -Message 'Purge confirm deleted a file not listed in the manifest.'
+    Assert-FileExists -Path $purgeEscapeFile -Message 'Purge confirm deleted an escaping manifest path.'
+    foreach ($path in $keepPaths) {
+        Assert-FileExists -Path $path -Message "Purge confirm touched a KEEP path: $path"
+    }
+
     $script:ApplyStagePlanValidationResult = 'passed: dry-run, quarantine move, manifest, undo dry-run, restore, collision skip, and hash-mismatch skip validated'
+    $script:PurgeValidationResult = 'passed: dry-run, confirm purge, hostile manifest skips, original-path protection, and non-listed file protection validated'
 
     Write-Step 'Summary'
     Write-Host "Generated workspace path: $workspaceRoot"
@@ -825,11 +981,14 @@ try {
     Write-Host "Prestage report validation result: $script:PrestageReportValidationResult"
     Write-Host "Multi-root validation result: $script:MultiRootValidationResult"
     Write-Host "Apply stage plan validation result: $script:ApplyStagePlanValidationResult"
+    Write-Host "Purge quarantine validation result: $script:PurgeValidationResult"
     Write-Host "Prestage report: $script:PrestageReportPath"
     Write-Host "Multi-root prestage report: $script:MultiRootPrestageReportPath"
     Write-Host "Stage plan: $script:StagePlanPath"
     Write-Host "Quarantine session: $script:QuarantineSessionPath"
     Write-Host "Quarantine manifest: $script:QuarantineManifestPath"
+    Write-Host "Purge manifest: $script:PurgeManifestPath"
+    Write-Host "Purge log: $script:PurgeLogPath"
     Write-Host "Clean DB validation result: $script:CleanDbValidationResult"
     Write-Host "Missing DB validation result: $script:MissingDbValidationResult"
     Write-Host 'Final PASS'
@@ -850,11 +1009,14 @@ catch {
     Write-Host "Prestage report validation result: $script:PrestageReportValidationResult"
     Write-Host "Multi-root validation result: $script:MultiRootValidationResult"
     Write-Host "Apply stage plan validation result: $script:ApplyStagePlanValidationResult"
+    Write-Host "Purge quarantine validation result: $script:PurgeValidationResult"
     Write-Host "Prestage report: $script:PrestageReportPath"
     Write-Host "Multi-root prestage report: $script:MultiRootPrestageReportPath"
     Write-Host "Stage plan: $script:StagePlanPath"
     Write-Host "Quarantine session: $script:QuarantineSessionPath"
     Write-Host "Quarantine manifest: $script:QuarantineManifestPath"
+    Write-Host "Purge manifest: $script:PurgeManifestPath"
+    Write-Host "Purge log: $script:PurgeLogPath"
     Write-Host "Clean DB validation result: $script:CleanDbValidationResult"
     Write-Host "Missing DB validation result: $script:MissingDbValidationResult"
     $exitCode = 1
