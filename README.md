@@ -6,7 +6,28 @@ It scans a selected drive or folder, stores file metadata and SHA-256 hashes in 
 
 ## Safety
 
-DuplFinder only reports duplicates. It does not delete, move, rename, sort, upload, or modify user files.
+DuplFinder starts as a report-only exact duplicate finder. The normal review flow is explicit and staged:
+
+```text
+scan
+-> duplicates
+-> prestage-report
+-> export stage-plan.json
+-> apply-stage-plan --dry-run
+-> apply-stage-plan --quarantine
+-> undo-quarantine --dry-run / --restore
+-> purge-quarantine --dry-run / --confirm-purge
+```
+
+`prestage-report` is read-only and does not move or delete files. `stage-plan.json` is only a plan exported from the local HTML report.
+
+`apply-stage-plan` defaults to dry-run. Quarantine mode moves only selected `stage_paths` from the stage plan into a DuplFinder quarantine session. `KEEP` files are never moved or modified.
+
+`undo-quarantine` can restore quarantined files using the quarantine manifest.
+
+`purge-quarantine` only deletes files already inside the quarantine session and listed in the manifest. It never deletes `original_path`, `keep_path`, or any original duplicate file location.
+
+Plan and manifest files are treated as untrusted input. Destructive actions validate schema, paths, quarantine containment, size, and SHA-256 before acting. Users should inspect dry-run output before quarantine or purge.
 
 For the MVP, duplicate detection is exact only:
 
@@ -21,6 +42,7 @@ DuplFinder is not:
 
 - a file sorter
 - an automatic cleanup or delete tool
+- an antivirus or malware scanner
 - a forensic scanner
 - a perceptual image/audio/video similarity tool
 - a fuzzy matching or "DNA" fingerprint tool
@@ -66,6 +88,27 @@ Optionally generate a local review report before any future staging workflow:
 
 ```powershell
 dotnet run --project .\DuplicateFinder.csproj -- prestage-report --db duplicates.db --out prestage-report.html
+```
+
+After exporting `stage-plan.json` from the report, inspect the dry-run before moving anything:
+
+```powershell
+dotnet run --project .\DuplicateFinder.csproj -- apply-stage-plan --plan stage-plan.json --dry-run
+dotnet run --project .\DuplicateFinder.csproj -- apply-stage-plan --plan stage-plan.json --quarantine "D:\DuplFinder-Quarantine"
+```
+
+If needed, restore quarantined files with the manifest:
+
+```powershell
+dotnet run --project .\DuplicateFinder.csproj -- undo-quarantine --manifest "D:\DuplFinder-Quarantine\session-...\duplfinder-quarantine-manifest.json" --dry-run
+dotnet run --project .\DuplicateFinder.csproj -- undo-quarantine --manifest "D:\DuplFinder-Quarantine\session-...\duplfinder-quarantine-manifest.json" --restore
+```
+
+Only after review, purge validated files from the quarantine session:
+
+```powershell
+dotnet run --project .\DuplicateFinder.csproj -- purge-quarantine --manifest "D:\DuplFinder-Quarantine\session-...\duplfinder-quarantine-manifest.json" --dry-run
+dotnet run --project .\DuplicateFinder.csproj -- purge-quarantine --manifest "D:\DuplFinder-Quarantine\session-...\duplfinder-quarantine-manifest.json" --confirm-purge
 ```
 
 ## Commands
@@ -143,6 +186,62 @@ Options:
 --force       Overwrite the output HTML report if it already exists
 ```
 
+### `apply-stage-plan`
+
+Reads `stage-plan.json`, validates it as untrusted input, and reports or quarantines selected stage candidates.
+
+```powershell
+dotnet run --project .\DuplicateFinder.csproj -- apply-stage-plan --plan stage-plan.json --dry-run
+dotnet run --project .\DuplicateFinder.csproj -- apply-stage-plan --plan stage-plan.json --quarantine "D:\DuplFinder-Quarantine"
+```
+
+Default mode is dry-run/report only. Quarantine mode creates a unique `session-*` folder and writes `duplfinder-quarantine-manifest.json` for rollback.
+
+Before moving any file, DuplFinder verifies:
+
+- stage-plan schema is `duplfinder.stage-plan.v1`
+- paths are fully-qualified local paths
+- selected `stage_paths` are not the `keep_path`
+- `KEEP` exists and still matches the group size + SHA-256
+- each staged file still matches the group size + SHA-256
+- reparse points, symlinks, and junctions are not followed
+
+`KEEP` files are never moved or modified.
+
+### `undo-quarantine`
+
+Restores quarantined files using the quarantine manifest.
+
+```powershell
+dotnet run --project .\DuplicateFinder.csproj -- undo-quarantine --manifest "D:\DuplFinder-Quarantine\session-...\duplfinder-quarantine-manifest.json" --dry-run
+dotnet run --project .\DuplicateFinder.csproj -- undo-quarantine --manifest "D:\DuplFinder-Quarantine\session-...\duplfinder-quarantine-manifest.json" --restore
+```
+
+Default mode is dry-run/report only. `--restore` is required to move files back.
+
+Undo validates manifest schema, quarantine root/session containment, size, and SHA-256 before restoring. It never overwrites an existing original path and does not delete files.
+
+### `purge-quarantine`
+
+Purges quarantined files after review.
+
+```powershell
+dotnet run --project .\DuplicateFinder.csproj -- purge-quarantine --manifest "D:\DuplFinder-Quarantine\session-...\duplfinder-quarantine-manifest.json" --dry-run
+dotnet run --project .\DuplicateFinder.csproj -- purge-quarantine --manifest "D:\DuplFinder-Quarantine\session-...\duplfinder-quarantine-manifest.json" --confirm-purge
+```
+
+Default mode is dry-run/report only. `--confirm-purge` is required to delete anything.
+
+Purge validates manifest schema, quarantine root/session containment, local-only paths, size, and SHA-256 immediately before deletion. It deletes only validated files already inside the quarantine session and listed in the manifest with status `moved`.
+
+Purge never deletes:
+
+- `original_path`
+- `keep_path`
+- original duplicate locations
+- files not listed in the manifest
+- folders or directories
+
 ### `stats`
 
 Shows database totals and estimated potential saving.
@@ -172,6 +271,8 @@ These read-oriented commands require the database file to already exist:
 
 If the database path is wrong, the program exits with a clear error instead of silently creating an empty database.
 
+`apply-stage-plan`, `undo-quarantine`, and `purge-quarantine` do not use SQLite directly. They validate JSON plan/manifest files as untrusted input before acting.
+
 ## Duplicate Detection
 
 The final source of truth is SQLite grouping by full hash:
@@ -197,6 +298,7 @@ Run the same checks used by the project workflow:
 dotnet restore
 dotnet build .\DuplicateFinder.csproj -c Release
 .\scripts\smoke-test.ps1 -ProjectPath .\DuplicateFinder.csproj
+.\scripts\full-smoke-test.ps1 -ProjectPath .\DuplicateFinder.csproj -Configuration Release
 ```
 
 GitHub Actions also builds, runs the smoke test, publishes a self-contained `win-x64` single-file executable, and uploads it as an artifact.

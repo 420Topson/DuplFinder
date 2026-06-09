@@ -19,15 +19,21 @@ $script:PrestageReportPath = ''
 $script:MultiRootValidationResult = 'not run'
 $script:MultiRootPrestageReportPath = ''
 $script:ApplyStagePlanValidationResult = 'not run'
+$script:PurgeValidationResult = 'not run'
 $script:StagePlanPath = ''
 $script:QuarantineSessionPath = ''
 $script:QuarantineManifestPath = ''
+$script:PurgeManifestPath = ''
+$script:PurgeLogPath = ''
 $script:CleanDbValidationResult = 'not run'
 $script:MissingDbValidationResult = 'not run'
 $script:EmptyFileBehavior = ''
 $script:FailureMessage = ''
 $script:ProjectFullPath = ''
 $script:LogsRoot = ''
+$script:PolishFolderName = -join @('Za', [char]0x017C, [char]0x00F3, [char]0x0142, [char]0x0107, ' g', [char]0x0119, [char]0x015B, 'l', [char]0x0105, ' ja', [char]0x017A, [char]0x0144)
+$script:PolishDuplicateFileName = -join @('duplikat_', [char]0x0105, [char]0x0119, [char]0x015B, [char]0x0107, '.txt')
+$script:PolishStageFileName = -join @('alpha_stage_', [char]0x0105, [char]0x0119, [char]0x015B, [char]0x0107, '.txt')
 
 function Write-Step {
     param([string]$Message)
@@ -45,6 +51,42 @@ function Assert-True {
     if (-not $Condition) {
         throw $Message
     }
+}
+
+function Test-StringContains {
+    param(
+        [string]$Value,
+        [string]$Needle,
+        [StringComparison]$Comparison = [StringComparison]::Ordinal
+    )
+
+    if ($null -eq $Value) {
+        return $false
+    }
+
+    return $Value.IndexOf($Needle, $Comparison) -ge 0
+}
+
+function ConvertTo-TestLiteralPath {
+    param([string]$Path)
+
+    if ([string]::IsNullOrWhiteSpace($Path)) {
+        return $Path
+    }
+
+    if ($Path.StartsWith('\\?\', [StringComparison]::Ordinal)) {
+        return $Path
+    }
+
+    if ($Path.StartsWith('\\', [StringComparison]::Ordinal)) {
+        return '\\?\UNC\' + $Path.Substring(2)
+    }
+
+    if ([System.IO.Path]::IsPathRooted($Path)) {
+        return '\\?\' + [System.IO.Path]::GetFullPath($Path)
+    }
+
+    return $Path
 }
 
 function Get-DefaultParentWorkDir {
@@ -73,8 +115,8 @@ function Test-IsDefaultScanExcludedPath {
     param([string]$Path)
 
     $normalized = $Path.Replace([System.IO.Path]::AltDirectorySeparatorChar, [System.IO.Path]::DirectorySeparatorChar).TrimEnd([System.IO.Path]::DirectorySeparatorChar)
-    return $normalized.Contains('\AppData\Local\Temp', [StringComparison]::OrdinalIgnoreCase) -or
-        $normalized.Contains('\AppData\Local\Microsoft\Windows', [StringComparison]::OrdinalIgnoreCase)
+    return (Test-StringContains -Value $normalized -Needle '\AppData\Local\Temp' -Comparison ([StringComparison]::OrdinalIgnoreCase)) -or
+        (Test-StringContains -Value $normalized -Needle '\AppData\Local\Microsoft\Windows' -Comparison ([StringComparison]::OrdinalIgnoreCase))
 }
 
 function New-TestFileBytes {
@@ -106,7 +148,7 @@ function New-TestFile {
 function Get-FileSha256 {
     param([string]$Path)
 
-    return (Get-FileHash -LiteralPath $Path -Algorithm SHA256).Hash
+    return (Get-FileHash -LiteralPath (ConvertTo-TestLiteralPath -Path $Path) -Algorithm SHA256).Hash
 }
 
 function Write-JsonFile {
@@ -121,7 +163,7 @@ function Write-JsonFile {
     }
 
     $json = $Value | ConvertTo-Json -Depth 12
-    Set-Content -LiteralPath $Path -Value $json -Encoding UTF8
+    Set-Content -LiteralPath (ConvertTo-TestLiteralPath -Path $Path) -Value $json -Encoding UTF8
 }
 
 function Assert-FileExists {
@@ -130,7 +172,7 @@ function Assert-FileExists {
         [string]$Message
     )
 
-    Assert-True -Condition (Test-Path -LiteralPath $Path -PathType Leaf) -Message $Message
+    Assert-True -Condition ([System.IO.File]::Exists((ConvertTo-TestLiteralPath -Path $Path))) -Message $Message
 }
 
 function Assert-FileMissing {
@@ -139,7 +181,8 @@ function Assert-FileMissing {
         [string]$Message
     )
 
-    Assert-True -Condition (-not (Test-Path -LiteralPath $Path)) -Message $Message
+    $literalPath = ConvertTo-TestLiteralPath -Path $Path
+    Assert-True -Condition (-not ([System.IO.File]::Exists($literalPath) -or [System.IO.Directory]::Exists($literalPath))) -Message $Message
 }
 
 function Get-EntryByOriginalPath {
@@ -172,8 +215,15 @@ function Invoke-DuplFinder {
         '--'
     ) + $CliArgs
 
-    $output = & dotnet @dotnetArgs 2>&1 | Out-String
-    $exitCode = $LASTEXITCODE
+    $previousErrorActionPreference = $ErrorActionPreference
+    $ErrorActionPreference = 'Continue'
+    try {
+        $output = & dotnet @dotnetArgs 2>&1 | ForEach-Object { $_.ToString() } | Out-String
+        $exitCode = $LASTEXITCODE
+    }
+    finally {
+        $ErrorActionPreference = $previousErrorActionPreference
+    }
 
     $logPath = Join-Path $script:LogsRoot $LogName
     $logText = @(
@@ -356,12 +406,12 @@ function Assert-PrestageReportHtml {
     $reportData = $reportDataMatch.Groups['json'].Value | ConvertFrom-Json
     $reportPaths = @($reportData.groups | ForEach-Object { $_.files } | ForEach-Object { [string]$_.path })
 
-    Assert-True -Condition ($html.Contains('duplfinder.stage-plan.v1', [StringComparison]::Ordinal)) -Message 'Prestage report is missing the stage-plan schema marker.'
-    Assert-True -Condition ($html.Contains('Export stage-plan.json', [StringComparison]::Ordinal)) -Message 'Prestage report is missing the export button text.'
-    Assert-True -Condition ($html.Contains('Files in duplicate groups', [StringComparison]::Ordinal)) -Message 'Prestage report is missing the files-in-duplicate-groups summary label.'
-    Assert-True -Condition ($html.Contains('Redundant files', [StringComparison]::Ordinal)) -Message 'Prestage report is missing the redundant files summary label.'
-    Assert-True -Condition ($html.Contains('This report does not move or delete files. It only exports a stage plan.', [StringComparison]::Ordinal)) -Message 'Prestage report is missing the no move/delete safety warning.'
-    Assert-True -Condition ($html.Contains('stageAllExceptKeep(group, groupState, index)', [StringComparison]::Ordinal)) -Message 'Prestage report KEEP handler should stage all non-KEEP files in the changed group.'
+    Assert-True -Condition (Test-StringContains -Value $html -Needle 'duplfinder.stage-plan.v1') -Message 'Prestage report is missing the stage-plan schema marker.'
+    Assert-True -Condition (Test-StringContains -Value $html -Needle 'Export stage-plan.json') -Message 'Prestage report is missing the export button text.'
+    Assert-True -Condition (Test-StringContains -Value $html -Needle 'Files in duplicate groups') -Message 'Prestage report is missing the files-in-duplicate-groups summary label.'
+    Assert-True -Condition (Test-StringContains -Value $html -Needle 'Redundant files') -Message 'Prestage report is missing the redundant files summary label.'
+    Assert-True -Condition (Test-StringContains -Value $html -Needle 'This report does not move or delete files. It only exports a stage plan.') -Message 'Prestage report is missing the no move/delete safety warning.'
+    Assert-True -Condition (Test-StringContains -Value $html -Needle 'stageAllExceptKeep(group, groupState, index)') -Message 'Prestage report KEEP handler should stage all non-KEEP files in the changed group.'
 
     foreach ($knownPath in $KnownDuplicatePaths) {
         Assert-True -Condition (Test-PathInList -Paths $reportPaths -Path $knownPath) -Message "Prestage report is missing expected duplicate path: $knownPath"
@@ -371,10 +421,10 @@ function Assert-PrestageReportHtml {
         Assert-True -Condition (-not (Test-PathInList -Paths $reportPaths -Path $absentPath)) -Message "Prestage report unexpectedly contains a skipped/non-duplicate path: $absentPath"
     }
 
-    Assert-True -Condition (($html.Contains('#0f1115', [StringComparison]::Ordinal)) -or ($html.Contains('#171a21', [StringComparison]::Ordinal))) -Message 'Prestage report is missing expected dark theme color markers.'
-    Assert-True -Condition (-not $html.Contains('https://', [StringComparison]::OrdinalIgnoreCase)) -Message 'Prestage report should not reference https:// resources.'
-    Assert-True -Condition (-not $html.Contains('http://', [StringComparison]::OrdinalIgnoreCase)) -Message 'Prestage report should not reference http:// resources.'
-    Assert-True -Condition (-not $html.Contains('<script src=', [StringComparison]::OrdinalIgnoreCase)) -Message 'Prestage report should not load external scripts.'
+    Assert-True -Condition ((Test-StringContains -Value $html -Needle '#0f1115') -or (Test-StringContains -Value $html -Needle '#171a21')) -Message 'Prestage report is missing expected dark theme color markers.'
+    Assert-True -Condition (-not (Test-StringContains -Value $html -Needle 'https://' -Comparison ([StringComparison]::OrdinalIgnoreCase))) -Message 'Prestage report should not reference https:// resources.'
+    Assert-True -Condition (-not (Test-StringContains -Value $html -Needle 'http://' -Comparison ([StringComparison]::OrdinalIgnoreCase))) -Message 'Prestage report should not reference http:// resources.'
+    Assert-True -Condition (-not (Test-StringContains -Value $html -Needle '<script src=' -Comparison ([StringComparison]::OrdinalIgnoreCase))) -Message 'Prestage report should not load external scripts.'
     Assert-True -Condition (-not [regex]::IsMatch($html, '<link\b', [System.Text.RegularExpressions.RegexOptions]::IgnoreCase)) -Message 'Prestage report should not depend on external linked CSS/resources.'
     Assert-True -Condition (-not [regex]::IsMatch($html, '@import\b', [System.Text.RegularExpressions.RegexOptions]::IgnoreCase)) -Message 'Prestage report should not use external CSS imports.'
 }
@@ -450,7 +500,7 @@ try {
 
     $alpha1 = New-TestFile -Path (Join-Path (Join-Path $datasetRoot 'Alpha One') 'alpha-copy-one.txt') -Content $alphaContent
     $alpha2 = New-TestFile -Path (Join-Path (Join-Path (Join-Path (Join-Path $datasetRoot 'Nested') 'Level 1') 'Level 2') 'Level 3\renamed-alpha.md') -Content $alphaContent
-    $alpha3 = New-TestFile -Path (Join-Path (Join-Path $datasetRoot 'Zażółć gęślą jaźń') 'duplikat_ąęść.txt') -Content $alphaContent
+    $alpha3 = New-TestFile -Path (Join-Path (Join-Path $datasetRoot $script:PolishFolderName) $script:PolishDuplicateFileName) -Content $alphaContent
 
     $beta1 = New-TestFile -Path (Join-Path (Join-Path $datasetRoot 'Beta A') 'report.txt') -Content $betaContent
     $beta2 = New-TestFile -Path (Join-Path (Join-Path $datasetRoot 'Beta B') 'report.txt') -Content $betaContent
@@ -647,7 +697,7 @@ try {
 
     $applyAlphaKeep = New-TestFile -Path (Join-Path (Join-Path $applyRoot 'Alpha Keep') 'alpha-keep.txt') -Content $applyAlphaContent
     $applyAlphaNested = New-TestFile -Path (Join-Path (Join-Path (Join-Path (Join-Path $applyRoot 'Alpha Nested') 'Level 1') 'Level 2') 'Level 3\alpha-stage-nested.md') -Content $applyAlphaContent
-    $applyAlphaUnicode = New-TestFile -Path (Join-Path (Join-Path $applyRoot 'Zażółć gęślą jaźń') 'alpha_stage_ąęść.txt') -Content $applyAlphaContent
+    $applyAlphaUnicode = New-TestFile -Path (Join-Path (Join-Path $applyRoot $script:PolishFolderName) $script:PolishStageFileName) -Content $applyAlphaContent
 
     $applyBetaKeep = New-TestFile -Path (Join-Path (Join-Path $applyRoot 'Beta Keep') 'report.txt') -Content $applyBetaContent
     $applyBetaStage = New-TestFile -Path (Join-Path (Join-Path $applyRoot 'Beta Stage') 'report.txt') -Content $applyBetaContent
@@ -749,9 +799,10 @@ try {
     Assert-True -Condition ($applyQuarantine.ExitCode -eq 0) -Message 'apply-stage-plan quarantine mode failed.'
     Assert-True -Condition ($applyQuarantine.Output -match 'Mode:\s+quarantine') -Message 'apply-stage-plan quarantine mode did not report quarantine mode.'
 
-    $manifests = @(Get-ChildItem -LiteralPath $quarantineRoot -Recurse -Filter 'duplfinder-quarantine-manifest.json')
-    Assert-True -Condition ($manifests.Count -eq 1) -Message "Expected exactly one quarantine manifest, found $($manifests.Count)."
-    $manifestPath = $manifests[0].FullName
+    $manifestMatch = [regex]::Match($applyQuarantine.Output, '(?m)^Manifest:\s+(.+duplfinder-quarantine-manifest\.json)\s*$')
+    Assert-True -Condition $manifestMatch.Success -Message 'apply-stage-plan quarantine output did not include a manifest path.'
+    $manifestPath = $manifestMatch.Groups[1].Value.Trim()
+    Assert-FileExists -Path $manifestPath -Message 'apply-stage-plan quarantine did not create the reported manifest file.'
     $manifest = Get-Content -LiteralPath $manifestPath -Raw | ConvertFrom-Json
     $manifestEntries = @($manifest.entries)
     Assert-True -Condition ([string]$manifest.schema -eq 'duplfinder.quarantine-manifest.v1') -Message 'Quarantine manifest schema is invalid.'
@@ -789,7 +840,7 @@ try {
     Assert-True -Condition ($null -ne $collisionEntry) -Message 'Manifest is missing the collision test entry.'
     Assert-True -Condition ($null -ne $hashMismatchEntry) -Message 'Manifest is missing the hash-mismatch test entry.'
     New-TestFile -Path $applyBetaStage -Content 'collision original created before undo restore' | Out-Null
-    Set-Content -LiteralPath ([string]$hashMismatchEntry.quarantine_path) -Value 'tampered quarantine content; restore should skip' -Encoding UTF8
+    Set-Content -LiteralPath (ConvertTo-TestLiteralPath -Path ([string]$hashMismatchEntry.quarantine_path)) -Value 'tampered quarantine content; restore should skip' -Encoding UTF8
 
     $undoRestore = Invoke-DuplFinder -CliArgs @('undo-quarantine', '--manifest', $manifestPath, '--restore') -LogName 'undo-quarantine-restore.log'
     Assert-True -Condition ($undoRestore.ExitCode -eq 0) -Message 'undo-quarantine --restore failed.'
@@ -801,7 +852,7 @@ try {
         Assert-FileMissing -Path ([string]$entry.quarantine_path) -Message "Undo restore left quarantine file behind for restored path: $([string]$entry.quarantine_path)"
     }
     Assert-FileExists -Path $applyBetaStage -Message 'Undo collision path should still exist at original location.'
-    Assert-True -Condition ((Get-Content -LiteralPath $applyBetaStage -Raw).Contains('collision original', [StringComparison]::Ordinal)) -Message 'Undo collision overwrote the existing original file.'
+    Assert-True -Condition (Test-StringContains -Value (Get-Content -LiteralPath (ConvertTo-TestLiteralPath -Path $applyBetaStage) -Raw) -Needle 'collision original') -Message 'Undo collision overwrote the existing original file.'
     Assert-FileExists -Path ([string]$collisionEntry.quarantine_path) -Message 'Undo collision should leave quarantined file in place.'
     Assert-FileMissing -Path $applyGammaStage -Message 'Undo hash mismatch should not restore the tampered quarantine file.'
     Assert-FileExists -Path ([string]$hashMismatchEntry.quarantine_path) -Message 'Undo hash mismatch should leave tampered quarantine file in place.'
@@ -810,7 +861,161 @@ try {
         Assert-FileExists -Path $path -Message "Apply/undo validation unexpectedly lost protected path: $path"
     }
 
+    Write-Step 'Purge quarantine and hostile manifest input'
+    $purgeQuarantineRoot = Join-Path $applyStageOutput 'purge-quarantine'
+    $purgeApply = Invoke-DuplFinder -CliArgs @('apply-stage-plan', '--plan', $stagePlanPath, '--quarantine', $purgeQuarantineRoot) -LogName 'apply-stage-plan-purge-quarantine.log'
+    Assert-True -Condition ($purgeApply.ExitCode -eq 0) -Message 'apply-stage-plan quarantine mode failed for purge validation.'
+
+    $purgeManifestMatch = [regex]::Match($purgeApply.Output, '(?m)^Manifest:\s+(.+duplfinder-quarantine-manifest\.json)\s*$')
+    Assert-True -Condition $purgeManifestMatch.Success -Message 'apply-stage-plan purge setup output did not include a manifest path.'
+    $purgeBaseManifestPath = $purgeManifestMatch.Groups[1].Value.Trim()
+    Assert-FileExists -Path $purgeBaseManifestPath -Message 'apply-stage-plan purge setup did not create the reported manifest file.'
+    $purgeBaseManifest = Get-Content -LiteralPath $purgeBaseManifestPath -Raw | ConvertFrom-Json
+    $purgeBaseEntries = @($purgeBaseManifest.entries)
+    Assert-True -Condition ($purgeBaseEntries.Count -ge 3) -Message 'Purge validation expected at least three freshly quarantined files.'
+
+    $purgeValidEntry = Get-EntryByOriginalPath -Manifest $purgeBaseManifest -OriginalPath $applyAlphaNested
+    $purgeMissingEntry = Get-EntryByOriginalPath -Manifest $purgeBaseManifest -OriginalPath $applyAlphaUnicode
+    $purgeTamperedEntry = Get-EntryByOriginalPath -Manifest $purgeBaseManifest -OriginalPath $applyRootBStage
+    Assert-True -Condition ($null -ne $purgeValidEntry) -Message 'Purge manifest is missing the valid purge entry.'
+    Assert-True -Condition ($null -ne $purgeMissingEntry) -Message 'Purge manifest is missing the missing-file entry.'
+    Assert-True -Condition ($null -ne $purgeTamperedEntry) -Message 'Purge manifest is missing the tampered-file entry.'
+
+    $purgeSessionPath = [string]$purgeBaseManifest.quarantine_session_path
+    $purgeStrayFile = New-TestFile -Path (Join-Path $purgeSessionPath 'stray-not-listed.txt') -Content 'not listed in manifest; purge must not delete this file'
+    $purgeNegativeFile = New-TestFile -Path (Join-Path $purgeSessionPath 'negative-size-listed.txt') -Content 'negative size listed file should not be deleted'
+    $purgeInvalidHashFile = New-TestFile -Path (Join-Path $purgeSessionPath 'invalid-hash-listed.txt') -Content 'invalid sha listed file should not be deleted'
+    $purgeEscapeFile = New-TestFile -Path (Join-Path $applyStageOutput 'escape-target-outside-quarantine.txt') -Content 'escape target should not be deleted'
+
+    Remove-Item -LiteralPath (ConvertTo-TestLiteralPath -Path ([string]$purgeMissingEntry.quarantine_path)) -Force
+    Set-Content -LiteralPath (ConvertTo-TestLiteralPath -Path ([string]$purgeTamperedEntry.quarantine_path)) -Value 'tampered before purge; hash mismatch should skip' -Encoding UTF8
+    New-TestFile -Path ([string]$purgeValidEntry.original_path) -Content 'original placeholder created before purge; must survive' | Out-Null
+
+    $purgeManifestPath = Join-Path $applyStageOutput 'purge-hostile-manifest.json'
+    $purgeManifestForTest = [ordered]@{
+        schema = 'duplfinder.quarantine-manifest.v1'
+        created_utc = [string]$purgeBaseManifest.created_utc
+        source_stage_plan_path = [string]$purgeBaseManifest.source_stage_plan_path
+        quarantine_root_path = [string]$purgeBaseManifest.quarantine_root_path
+        quarantine_session_path = [string]$purgeBaseManifest.quarantine_session_path
+        tool_version = [string]$purgeBaseManifest.tool_version
+        entries = @(
+            [ordered]@{
+                original_path = [string]$purgeValidEntry.original_path
+                quarantine_path = [string]$purgeValidEntry.quarantine_path
+                size = [int64]$purgeValidEntry.size
+                sha256 = [string]$purgeValidEntry.sha256
+                group_number = [int]$purgeValidEntry.group_number
+                group_hash = [string]$purgeValidEntry.group_hash
+                moved_utc = [string]$purgeValidEntry.moved_utc
+                status = 'moved'
+            },
+            [ordered]@{
+                original_path = [string]$purgeMissingEntry.original_path
+                quarantine_path = [string]$purgeMissingEntry.quarantine_path
+                size = [int64]$purgeMissingEntry.size
+                sha256 = [string]$purgeMissingEntry.sha256
+                group_number = [int]$purgeMissingEntry.group_number
+                group_hash = [string]$purgeMissingEntry.group_hash
+                moved_utc = [string]$purgeMissingEntry.moved_utc
+                status = 'moved'
+            },
+            [ordered]@{
+                original_path = [string]$purgeTamperedEntry.original_path
+                quarantine_path = [string]$purgeTamperedEntry.quarantine_path
+                size = [int64]$purgeTamperedEntry.size
+                sha256 = [string]$purgeTamperedEntry.sha256
+                group_number = [int]$purgeTamperedEntry.group_number
+                group_hash = [string]$purgeTamperedEntry.group_hash
+                moved_utc = [string]$purgeTamperedEntry.moved_utc
+                status = 'moved'
+            },
+            [ordered]@{
+                original_path = (Join-Path $applyRoot 'Hostile\escape-original.txt')
+                quarantine_path = $purgeEscapeFile
+                size = (Get-Item -LiteralPath $purgeEscapeFile).Length
+                sha256 = Get-FileSha256 -Path $purgeEscapeFile
+                group_number = 9001
+                group_hash = Get-FileSha256 -Path $purgeEscapeFile
+                moved_utc = (Get-Date).ToUniversalTime().ToString('O')
+                status = 'moved'
+            },
+            [ordered]@{
+                original_path = (Join-Path $applyRoot 'Hostile\negative-original.txt')
+                quarantine_path = $purgeNegativeFile
+                size = -1
+                sha256 = Get-FileSha256 -Path $purgeNegativeFile
+                group_number = 9002
+                group_hash = Get-FileSha256 -Path $purgeNegativeFile
+                moved_utc = (Get-Date).ToUniversalTime().ToString('O')
+                status = 'moved'
+            },
+            [ordered]@{
+                original_path = (Join-Path $applyRoot 'Hostile\invalid-sha-original.txt')
+                quarantine_path = $purgeInvalidHashFile
+                size = (Get-Item -LiteralPath $purgeInvalidHashFile).Length
+                sha256 = 'not-a-valid-sha256'
+                group_number = 9003
+                group_hash = Get-FileSha256 -Path $purgeInvalidHashFile
+                moved_utc = (Get-Date).ToUniversalTime().ToString('O')
+                status = 'moved'
+            }
+        )
+    }
+    Write-JsonFile -Path $purgeManifestPath -Value $purgeManifestForTest
+    $script:PurgeManifestPath = $purgeManifestPath
+    $script:QuarantineSessionPath = $purgeSessionPath
+
+    $purgeDryRun = Invoke-DuplFinder -CliArgs @('purge-quarantine', '--manifest', $purgeManifestPath, '--dry-run') -LogName 'purge-quarantine-dry-run.log'
+    Assert-True -Condition ($purgeDryRun.ExitCode -eq 0) -Message 'purge-quarantine --dry-run failed.'
+    Assert-True -Condition ($purgeDryRun.Output -match 'Mode:\s+dry-run') -Message 'purge-quarantine dry-run did not report dry-run mode.'
+    Assert-True -Condition ($purgeDryRun.Output -match 'Manifest entries:\s+6') -Message 'purge-quarantine dry-run did not report expected manifest entry count.'
+    Assert-True -Condition ($purgeDryRun.Output -match 'Eligible entries:\s+6') -Message 'purge-quarantine dry-run did not report expected eligible entry count.'
+    Assert-True -Condition ($purgeDryRun.Output -match 'Planned:\s+1') -Message 'purge-quarantine dry-run did not report expected planned count.'
+    Assert-FileExists -Path ([string]$purgeValidEntry.quarantine_path) -Message 'Purge dry-run deleted the valid quarantine file.'
+    Assert-FileExists -Path ([string]$purgeTamperedEntry.quarantine_path) -Message 'Purge dry-run deleted the tampered quarantine file.'
+    Assert-FileExists -Path $purgeStrayFile -Message 'Purge dry-run deleted a file not listed in the manifest.'
+    Assert-FileExists -Path $purgeEscapeFile -Message 'Purge dry-run deleted an escaping manifest path.'
+
+    $purgeBothFlags = Invoke-DuplFinder -CliArgs @('purge-quarantine', '--manifest', $purgeManifestPath, '--dry-run', '--confirm-purge') -LogName 'purge-quarantine-conflicting-flags.log'
+    Assert-True -Condition ($purgeBothFlags.ExitCode -ne 0) -Message 'purge-quarantine accepted --dry-run with --confirm-purge.'
+
+    $invalidSchemaManifestPath = Join-Path $applyStageOutput 'purge-invalid-schema.json'
+    Write-JsonFile -Path $invalidSchemaManifestPath -Value ([ordered]@{ schema = 'invalid'; quarantine_root_path = $purgeQuarantineRoot; quarantine_session_path = $purgeSessionPath; entries = @() })
+    $invalidSchema = Invoke-DuplFinder -CliArgs @('purge-quarantine', '--manifest', $invalidSchemaManifestPath, '--dry-run') -LogName 'purge-invalid-schema.log'
+    Assert-True -Condition ($invalidSchema.ExitCode -ne 0) -Message 'purge-quarantine accepted an invalid manifest schema.'
+
+    $missingFieldsManifestPath = Join-Path $applyStageOutput 'purge-missing-fields.json'
+    Write-JsonFile -Path $missingFieldsManifestPath -Value ([ordered]@{ schema = 'duplfinder.quarantine-manifest.v1' })
+    $missingFields = Invoke-DuplFinder -CliArgs @('purge-quarantine', '--manifest', $missingFieldsManifestPath, '--dry-run') -LogName 'purge-missing-fields.log'
+    Assert-True -Condition ($missingFields.ExitCode -ne 0) -Message 'purge-quarantine accepted a manifest with missing required fields.'
+
+    $malformedManifestPath = Join-Path $applyStageOutput 'purge-malformed.json'
+    Set-Content -LiteralPath $malformedManifestPath -Value '{ malformed json' -Encoding UTF8
+    $malformed = Invoke-DuplFinder -CliArgs @('purge-quarantine', '--manifest', $malformedManifestPath, '--dry-run') -LogName 'purge-malformed-json.log'
+    Assert-True -Condition ($malformed.ExitCode -ne 0) -Message 'purge-quarantine accepted malformed JSON.'
+
+    $purgeConfirm = Invoke-DuplFinder -CliArgs @('purge-quarantine', '--manifest', $purgeManifestPath, '--confirm-purge') -LogName 'purge-quarantine-confirm.log'
+    Assert-True -Condition ($purgeConfirm.ExitCode -eq 0) -Message 'purge-quarantine --confirm-purge failed.'
+    Assert-True -Condition ($purgeConfirm.Output -match 'Mode:\s+purge') -Message 'purge-quarantine confirm did not report purge mode.'
+    Assert-True -Condition ($purgeConfirm.Output -match 'Purged:\s+1') -Message 'purge-quarantine confirm did not purge exactly one validated quarantine file.'
+    Assert-True -Condition ($purgeConfirm.Output -match 'Skipped:\s+5') -Message 'purge-quarantine confirm did not skip the expected hostile/missing/tampered entries.'
+    $script:PurgeLogPath = $purgeConfirm.LogPath
+
+    Assert-FileMissing -Path ([string]$purgeValidEntry.quarantine_path) -Message 'Purge confirm did not delete the validated quarantine file.'
+    Assert-FileExists -Path ([string]$purgeValidEntry.original_path) -Message 'Purge confirm deleted or touched original_path.'
+    Assert-True -Condition (Test-StringContains -Value (Get-Content -LiteralPath (ConvertTo-TestLiteralPath -Path ([string]$purgeValidEntry.original_path)) -Raw) -Needle 'original placeholder') -Message 'Purge confirm modified original_path.'
+    Assert-FileExists -Path ([string]$purgeTamperedEntry.quarantine_path) -Message 'Purge confirm deleted the tampered quarantine file.'
+    Assert-FileExists -Path $purgeNegativeFile -Message 'Purge confirm deleted the negative-size manifest file.'
+    Assert-FileExists -Path $purgeInvalidHashFile -Message 'Purge confirm deleted the invalid-sha manifest file.'
+    Assert-FileExists -Path $purgeStrayFile -Message 'Purge confirm deleted a file not listed in the manifest.'
+    Assert-FileExists -Path $purgeEscapeFile -Message 'Purge confirm deleted an escaping manifest path.'
+    foreach ($path in $keepPaths) {
+        Assert-FileExists -Path $path -Message "Purge confirm touched a KEEP path: $path"
+    }
+
     $script:ApplyStagePlanValidationResult = 'passed: dry-run, quarantine move, manifest, undo dry-run, restore, collision skip, and hash-mismatch skip validated'
+    $script:PurgeValidationResult = 'passed: dry-run, confirm purge, hostile manifest skips, original-path protection, and non-listed file protection validated'
 
     Write-Step 'Summary'
     Write-Host "Generated workspace path: $workspaceRoot"
@@ -825,11 +1030,14 @@ try {
     Write-Host "Prestage report validation result: $script:PrestageReportValidationResult"
     Write-Host "Multi-root validation result: $script:MultiRootValidationResult"
     Write-Host "Apply stage plan validation result: $script:ApplyStagePlanValidationResult"
+    Write-Host "Purge quarantine validation result: $script:PurgeValidationResult"
     Write-Host "Prestage report: $script:PrestageReportPath"
     Write-Host "Multi-root prestage report: $script:MultiRootPrestageReportPath"
     Write-Host "Stage plan: $script:StagePlanPath"
     Write-Host "Quarantine session: $script:QuarantineSessionPath"
     Write-Host "Quarantine manifest: $script:QuarantineManifestPath"
+    Write-Host "Purge manifest: $script:PurgeManifestPath"
+    Write-Host "Purge log: $script:PurgeLogPath"
     Write-Host "Clean DB validation result: $script:CleanDbValidationResult"
     Write-Host "Missing DB validation result: $script:MissingDbValidationResult"
     Write-Host 'Final PASS'
@@ -850,11 +1058,14 @@ catch {
     Write-Host "Prestage report validation result: $script:PrestageReportValidationResult"
     Write-Host "Multi-root validation result: $script:MultiRootValidationResult"
     Write-Host "Apply stage plan validation result: $script:ApplyStagePlanValidationResult"
+    Write-Host "Purge quarantine validation result: $script:PurgeValidationResult"
     Write-Host "Prestage report: $script:PrestageReportPath"
     Write-Host "Multi-root prestage report: $script:MultiRootPrestageReportPath"
     Write-Host "Stage plan: $script:StagePlanPath"
     Write-Host "Quarantine session: $script:QuarantineSessionPath"
     Write-Host "Quarantine manifest: $script:QuarantineManifestPath"
+    Write-Host "Purge manifest: $script:PurgeManifestPath"
+    Write-Host "Purge log: $script:PurgeLogPath"
     Write-Host "Clean DB validation result: $script:CleanDbValidationResult"
     Write-Host "Missing DB validation result: $script:MissingDbValidationResult"
     $exitCode = 1

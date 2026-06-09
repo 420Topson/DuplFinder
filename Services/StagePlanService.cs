@@ -12,6 +12,10 @@ public sealed class StagePlanService
     private const string StagePlanSchema = "duplfinder.stage-plan.v1";
     private const string ManifestSchema = "duplfinder.quarantine-manifest.v1";
     private const int BufferSize = 1024 * 1024;
+    private const long MaxJsonBytes = 64L * 1024 * 1024;
+    private const long MaxStagePlanGroups = 100_000;
+    private const long MaxStagePlanStagePaths = 1_000_000;
+    private const long MaxManifestEntries = 1_000_000;
 
     private static readonly JsonSerializerOptions JsonOptions = new()
     {
@@ -32,17 +36,21 @@ public sealed class StagePlanService
 
         if (!dryRun)
         {
-            quarantineRoot = Path.GetFullPath(options.QuarantineRoot!);
+            quarantineRoot = NormalizeCommandPath(options.QuarantineRoot!, "quarantine root");
             Directory.CreateDirectory(quarantineRoot);
+            EnsureNoReparsePointInPath(quarantineRoot, includeLeaf: true, "quarantine root");
+
             sessionPath = CreateUniqueSessionPath(quarantineRoot);
             Directory.CreateDirectory(sessionPath);
+            EnsureNoReparsePointInPath(sessionPath, includeLeaf: true, "quarantine session");
+
             manifestPath = Path.Combine(sessionPath, "duplfinder-quarantine-manifest.json");
         }
 
-        var planned = 0;
-        var moved = 0;
-        var skipped = 0;
-        var failed = 0;
+        long planned = 0;
+        long moved = 0;
+        long skipped = 0;
+        long failed = 0;
 
         Console.WriteLine(dryRun ? "Mode: dry-run" : "Mode: quarantine");
 
@@ -50,18 +58,17 @@ public sealed class StagePlanService
         {
             ct.ThrowIfCancellationRequested();
 
-            if (group.Size < 0 || string.IsNullOrWhiteSpace(group.Hash))
+            if (!ValidateStagePlanGroup(group, out var groupSkipCount, out var groupReason))
             {
-                Console.WriteLine($"SKIP group {group.GroupNumber}: invalid size/hash in stage plan.");
-                skipped++;
+                Console.WriteLine($"SKIP group {group.GroupNumber}: {groupReason}");
+                skipped = checked(skipped + groupSkipCount);
                 continue;
             }
 
-            var keepPath = GetFullPathSafe(group.KeepPath);
-            if (keepPath is null)
+            if (!TryNormalizeDataPath(group.KeepPath, out var keepPath, out var keepPathReason))
             {
-                Console.WriteLine($"SKIP group {group.GroupNumber}: invalid KEEP path.");
-                skipped += group.StagePaths.Count;
+                Console.WriteLine($"SKIP group {group.GroupNumber}: invalid KEEP path: {keepPathReason}");
+                skipped = checked(skipped + group.StagePaths.Count);
                 continue;
             }
 
@@ -69,7 +76,7 @@ public sealed class StagePlanService
             if (!keep.IsValid)
             {
                 Console.WriteLine($"SKIP group {group.GroupNumber}: KEEP file is missing, inaccessible, reparse, or no longer matches.");
-                skipped += group.StagePaths.Count;
+                skipped = checked(skipped + group.StagePaths.Count);
                 continue;
             }
 
@@ -78,10 +85,9 @@ public sealed class StagePlanService
             {
                 ct.ThrowIfCancellationRequested();
 
-                var stagePath = GetFullPathSafe(rawStagePath);
-                if (stagePath is null)
+                if (!TryNormalizeDataPath(rawStagePath, out var stagePath, out var stagePathReason))
                 {
-                    Console.WriteLine($"SKIP group {group.GroupNumber}: invalid STAGE path.");
+                    Console.WriteLine($"SKIP group {group.GroupNumber}: invalid STAGE path: {stagePathReason}");
                     skipped++;
                     continue;
                 }
@@ -121,7 +127,13 @@ public sealed class StagePlanService
 
                 try
                 {
-                    Directory.CreateDirectory(Path.GetDirectoryName(destination)!);
+                    var destinationParent = Path.GetDirectoryName(destination);
+                    if (!string.IsNullOrWhiteSpace(destinationParent))
+                    {
+                        Directory.CreateDirectory(destinationParent);
+                        EnsureNoReparsePointInPath(destinationParent, includeLeaf: true, "quarantine destination parent");
+                    }
+
                     File.Move(stagePath, destination);
                     moved++;
                     Console.WriteLine($"MOVED group {group.GroupNumber}: {stagePath} -> {destination}");
@@ -178,42 +190,38 @@ public sealed class StagePlanService
         var manifestPath = Path.GetFullPath(options.ManifestPath);
         var manifest = await LoadManifestAsync(manifestPath, ct);
         var dryRun = !options.Restore;
-        var rootPath = Path.GetFullPath(manifest.QuarantineRootPath);
-        var sessionPath = Path.GetFullPath(manifest.QuarantineSessionPath);
-
-        if (!IsPathInside(sessionPath, rootPath))
-            throw new InvalidDataException("Manifest quarantine session path is outside the quarantine root.");
 
         Console.WriteLine(dryRun ? "Mode: dry-run" : "Mode: restore");
 
-        var planned = 0;
-        var restored = 0;
-        var skipped = 0;
-        var failed = 0;
+        var manifestEntries = CountManifestEntries(manifest);
+        long eligibleEntries = 0;
+        long planned = 0;
+        long restored = 0;
+        long skipped = 0;
+        long failed = 0;
 
         foreach (var entry in manifest.Entries.Where(e => string.Equals(e.Status, "moved", StringComparison.OrdinalIgnoreCase)))
         {
             ct.ThrowIfCancellationRequested();
+            eligibleEntries++;
 
-            var quarantinePath = GetFullPathSafe(entry.QuarantinePath);
-            var originalPath = GetFullPathSafe(entry.OriginalPath);
-            if (quarantinePath is null || originalPath is null)
+            var quarantine = await TryValidateManifestQuarantineFileAsync(entry, manifest, "restore", ct);
+            if (!quarantine.IsValid)
             {
-                Console.WriteLine("SKIP restore: invalid original/quarantine path in manifest entry.");
                 skipped++;
                 continue;
             }
 
-            if (!IsPathInside(quarantinePath, sessionPath) || !IsPathInside(quarantinePath, rootPath))
+            if (!TryNormalizeDataPath(entry.OriginalPath, out var originalPath, out var originalReason))
             {
-                Console.WriteLine($"SKIP restore: quarantine path is outside manifest quarantine session/root: {quarantinePath}");
+                Console.WriteLine($"SKIP restore: invalid original path: {originalReason}");
                 skipped++;
                 continue;
             }
 
-            var quarantined = await TryValidateFileAsync(quarantinePath, entry.Size, entry.Sha256, "QUARANTINE restore", ct);
-            if (!quarantined.IsValid)
+            if (SamePath(quarantine.QuarantinePath, originalPath))
             {
+                Console.WriteLine($"SKIP restore: quarantine path equals original path: {quarantine.QuarantinePath}");
                 skipped++;
                 continue;
             }
@@ -229,7 +237,7 @@ public sealed class StagePlanService
 
             if (dryRun)
             {
-                Console.WriteLine($"PLAN restore: {quarantinePath} -> {originalPath}");
+                Console.WriteLine($"PLAN restore: {quarantine.QuarantinePath} -> {originalPath}");
                 continue;
             }
 
@@ -237,49 +245,206 @@ public sealed class StagePlanService
             {
                 var parent = Path.GetDirectoryName(originalPath);
                 if (!string.IsNullOrWhiteSpace(parent))
+                {
+                    EnsureNoReparsePointInPath(parent, includeLeaf: true, "original destination parent");
                     Directory.CreateDirectory(parent);
+                    EnsureNoReparsePointInPath(parent, includeLeaf: true, "original destination parent");
+                }
 
-                File.Move(quarantinePath, originalPath);
+                File.Move(quarantine.QuarantinePath, originalPath);
                 restored++;
-                Console.WriteLine($"RESTORED: {quarantinePath} -> {originalPath}");
+                Console.WriteLine($"RESTORED: {quarantine.QuarantinePath} -> {originalPath}");
             }
             catch (Exception ex) when (IsSafeIoException(ex))
             {
                 failed++;
-                Console.WriteLine($"SKIP restore: could not move {quarantinePath}: {ex.GetType().Name}: {ex.Message}");
+                Console.WriteLine($"SKIP restore: could not move {quarantine.QuarantinePath}: {ex.GetType().Name}: {ex.Message}");
             }
         }
 
         return new UndoQuarantineResult(
             DryRun: dryRun,
+            ManifestEntries: manifestEntries,
+            EligibleEntries: eligibleEntries,
             Planned: planned,
             Restored: restored,
             Skipped: skipped,
             Failed: failed);
     }
 
+    public async Task<PurgeQuarantineResult> PurgeQuarantineAsync(PurgeQuarantineOptions options, CancellationToken ct)
+    {
+        var manifestPath = Path.GetFullPath(options.ManifestPath);
+        var manifest = await LoadManifestAsync(manifestPath, ct);
+        var dryRun = !options.ConfirmPurge;
+
+        Console.WriteLine(dryRun ? "Mode: dry-run" : "Mode: purge");
+
+        var manifestEntries = CountManifestEntries(manifest);
+        long eligibleEntries = 0;
+        long planned = 0;
+        long purged = 0;
+        long skipped = 0;
+        long failed = 0;
+
+        foreach (var entry in manifest.Entries.Where(e => string.Equals(e.Status, "moved", StringComparison.OrdinalIgnoreCase)))
+        {
+            ct.ThrowIfCancellationRequested();
+            eligibleEntries++;
+
+            var quarantine = await TryValidateManifestQuarantineFileAsync(entry, manifest, "purge", ct);
+            if (!quarantine.IsValid)
+            {
+                skipped++;
+                continue;
+            }
+
+            if (!TryNormalizeDataPath(entry.OriginalPath, out var originalPath, out var originalReason))
+            {
+                Console.WriteLine($"SKIP purge: invalid original path in manifest entry: {originalReason}");
+                skipped++;
+                continue;
+            }
+
+            if (SamePath(quarantine.QuarantinePath, originalPath))
+            {
+                Console.WriteLine($"SKIP purge: quarantine path equals original path, refusing deletion: {quarantine.QuarantinePath}");
+                skipped++;
+                continue;
+            }
+
+            planned++;
+
+            if (dryRun)
+            {
+                Console.WriteLine($"PLAN purge: {quarantine.QuarantinePath}");
+                continue;
+            }
+
+            try
+            {
+                EnsureNoReparsePointInPath(quarantine.QuarantinePath, includeLeaf: true, "purge target");
+                if (Directory.Exists(quarantine.QuarantinePath))
+                {
+                    Console.WriteLine($"SKIP purge: target is a directory, not a file: {quarantine.QuarantinePath}");
+                    skipped++;
+                    continue;
+                }
+
+                if (!File.Exists(quarantine.QuarantinePath))
+                {
+                    Console.WriteLine($"SKIP purge: file does not exist: {quarantine.QuarantinePath}");
+                    skipped++;
+                    continue;
+                }
+
+                File.Delete(quarantine.QuarantinePath);
+                purged++;
+                Console.WriteLine($"PURGED: {quarantine.QuarantinePath}");
+            }
+            catch (Exception ex) when (IsSafeIoException(ex))
+            {
+                failed++;
+                Console.WriteLine($"SKIP purge: could not delete {quarantine.QuarantinePath}: {ex.GetType().Name}: {ex.Message}");
+            }
+        }
+
+        return new PurgeQuarantineResult(
+            DryRun: dryRun,
+            ManifestEntries: manifestEntries,
+            EligibleEntries: eligibleEntries,
+            Planned: planned,
+            Purged: purged,
+            Skipped: skipped,
+            Failed: failed);
+    }
+
     private static async Task<StagePlanDto> LoadStagePlanAsync(string path, CancellationToken ct)
     {
-        await using var stream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read, BufferSize, useAsync: true);
-        var plan = await JsonSerializer.DeserializeAsync<StagePlanDto>(stream, JsonOptions, ct)
-            ?? throw new InvalidDataException("Stage plan JSON is empty or invalid.");
+        var plan = await DeserializeJsonFileAsync<StagePlanDto>(path, "stage plan", ct);
 
         if (!string.Equals(plan.Schema, StagePlanSchema, StringComparison.Ordinal))
             throw new InvalidDataException($"Invalid stage plan schema. Expected {StagePlanSchema}.");
+
+        if (plan.Groups is null)
+            throw new InvalidDataException("Stage plan is missing required field: groups.");
+
+        if (plan.Groups.Count > MaxStagePlanGroups)
+            throw new InvalidDataException($"Stage plan has too many groups. Limit: {MaxStagePlanGroups}.");
+
+        long stagePaths = 0;
+        foreach (var group in plan.Groups)
+        {
+            if (group.StagePaths is null)
+                throw new InvalidDataException($"Stage plan group {group.GroupNumber} is missing required field: stage_paths.");
+
+            stagePaths = checked(stagePaths + group.StagePaths.Count);
+            if (stagePaths > MaxStagePlanStagePaths)
+                throw new InvalidDataException($"Stage plan has too many stage paths. Limit: {MaxStagePlanStagePaths}.");
+        }
 
         return plan;
     }
 
     private static async Task<QuarantineManifestDto> LoadManifestAsync(string path, CancellationToken ct)
     {
-        await using var stream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read, BufferSize, useAsync: true);
-        var manifest = await JsonSerializer.DeserializeAsync<QuarantineManifestDto>(stream, JsonOptions, ct)
-            ?? throw new InvalidDataException("Quarantine manifest JSON is empty or invalid.");
+        var manifest = await DeserializeJsonFileAsync<QuarantineManifestDto>(path, "quarantine manifest", ct);
 
         if (!string.Equals(manifest.Schema, ManifestSchema, StringComparison.Ordinal))
             throw new InvalidDataException($"Invalid quarantine manifest schema. Expected {ManifestSchema}.");
 
+        if (!TryNormalizeDataPath(manifest.QuarantineRootPath, out var rootPath, out var rootReason))
+            throw new InvalidDataException($"Invalid quarantine manifest root path: {rootReason}");
+
+        if (!TryNormalizeDataPath(manifest.QuarantineSessionPath, out var sessionPath, out var sessionReason))
+            throw new InvalidDataException($"Invalid quarantine manifest session path: {sessionReason}");
+
+        if (!IsPathInside(sessionPath, rootPath))
+            throw new InvalidDataException("Manifest quarantine session path is outside the quarantine root.");
+
+        if (manifest.Entries is null)
+            throw new InvalidDataException("Quarantine manifest is missing required field: entries.");
+
+        if (manifest.Entries.Count > MaxManifestEntries)
+            throw new InvalidDataException($"Quarantine manifest has too many entries. Limit: {MaxManifestEntries}.");
+
+        var seenQuarantinePaths = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var seenOriginalPaths = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var entry in manifest.Entries.Where(e => string.Equals(e.Status, "moved", StringComparison.OrdinalIgnoreCase)))
+        {
+            if (TryNormalizeDataPath(entry.QuarantinePath, out var quarantinePath, out _) &&
+                !seenQuarantinePaths.Add(quarantinePath))
+                throw new InvalidDataException($"Duplicate quarantine_path in manifest: {quarantinePath}");
+
+            if (TryNormalizeDataPath(entry.OriginalPath, out var originalPath, out _) &&
+                !seenOriginalPaths.Add(originalPath))
+                throw new InvalidDataException($"Duplicate original_path in manifest: {originalPath}");
+        }
+
+        manifest.QuarantineRootPath = rootPath;
+        manifest.QuarantineSessionPath = sessionPath;
         return manifest;
+    }
+
+    private static async Task<T> DeserializeJsonFileAsync<T>(string path, string label, CancellationToken ct)
+    {
+        var info = new FileInfo(path);
+        if (!info.Exists)
+            throw new FileNotFoundException($"{label} file not found: {info.FullName}", info.FullName);
+
+        if (info.Length > MaxJsonBytes)
+            throw new InvalidDataException($"{label} is too large. Limit: {MaxJsonBytes} bytes.");
+
+        try
+        {
+            await using var stream = new FileStream(info.FullName, FileMode.Open, FileAccess.Read, FileShare.Read, BufferSize, useAsync: true);
+            return await JsonSerializer.DeserializeAsync<T>(stream, JsonOptions, ct)
+                ?? throw new InvalidDataException($"{label} JSON is empty or invalid.");
+        }
+        catch (JsonException ex)
+        {
+            throw new InvalidDataException($"Invalid JSON in {label}: {ex.Message}", ex);
+        }
     }
 
     private static async Task WriteJsonNewFileAsync<T>(string path, T value, CancellationToken ct)
@@ -287,6 +452,76 @@ public sealed class StagePlanService
         await using var stream = new FileStream(path, FileMode.CreateNew, FileAccess.Write, FileShare.Read, BufferSize, useAsync: true);
         await JsonSerializer.SerializeAsync(stream, value, JsonOptions, ct);
         await stream.WriteAsync("\n"u8.ToArray(), ct);
+    }
+
+    private static bool ValidateStagePlanGroup(StagePlanGroupDto group, out long skippedStagePaths, out string reason)
+    {
+        skippedStagePaths = group.StagePaths?.Count ?? 0;
+
+        if (group.Size < 0)
+        {
+            reason = "negative size in stage plan.";
+            return false;
+        }
+
+        if (!IsValidSha256(group.Hash))
+        {
+            reason = "invalid SHA-256 hash in stage plan.";
+            return false;
+        }
+
+        if (group.StagePaths is null)
+        {
+            reason = "missing stage_paths.";
+            skippedStagePaths = 0;
+            return false;
+        }
+
+        reason = "";
+        return true;
+    }
+
+    private static async Task<ManifestFileValidation> TryValidateManifestQuarantineFileAsync(
+        QuarantineManifestEntryDto entry,
+        QuarantineManifestDto manifest,
+        string action,
+        CancellationToken ct)
+    {
+        if (entry.Size < 0)
+        {
+            Console.WriteLine($"SKIP {action}: negative size in manifest entry.");
+            return ManifestFileValidation.Invalid;
+        }
+
+        if (!IsValidSha256(entry.Sha256))
+        {
+            Console.WriteLine($"SKIP {action}: invalid SHA-256 in manifest entry.");
+            return ManifestFileValidation.Invalid;
+        }
+
+        if (!IsValidSha256(entry.GroupHash))
+        {
+            Console.WriteLine($"SKIP {action}: invalid group_hash in manifest entry.");
+            return ManifestFileValidation.Invalid;
+        }
+
+        if (!TryNormalizeDataPath(entry.QuarantinePath, out var quarantinePath, out var quarantineReason))
+        {
+            Console.WriteLine($"SKIP {action}: invalid quarantine path: {quarantineReason}");
+            return ManifestFileValidation.Invalid;
+        }
+
+        if (!IsPathInside(quarantinePath, manifest.QuarantineSessionPath) || !IsPathInside(quarantinePath, manifest.QuarantineRootPath))
+        {
+            Console.WriteLine($"SKIP {action}: quarantine path is outside manifest quarantine session/root: {quarantinePath}");
+            return ManifestFileValidation.Invalid;
+        }
+
+        var quarantined = await TryValidateFileAsync(quarantinePath, entry.Size, entry.Sha256, $"QUARANTINE {action}", ct);
+        if (!quarantined.IsValid)
+            return ManifestFileValidation.Invalid;
+
+        return new ManifestFileValidation(true, quarantinePath, quarantined.Fingerprint);
     }
 
     private static async Task<ValidationResult> TryValidateFileAsync(
@@ -298,22 +533,28 @@ public sealed class StagePlanService
     {
         try
         {
+            if (Directory.Exists(path))
+            {
+                Console.WriteLine($"SKIP {label}: path is a directory, not a file: {path}");
+                return ValidationResult.Invalid;
+            }
+
             if (!File.Exists(path))
             {
                 Console.WriteLine($"SKIP {label}: file does not exist: {path}");
                 return ValidationResult.Invalid;
             }
 
-            if (IsReparsePoint(path))
+            if (ContainsReparsePointInPath(path, includeLeaf: true))
             {
-                Console.WriteLine($"SKIP {label}: refusing reparse point/symlink path: {path}");
+                Console.WriteLine($"SKIP {label}: refusing reparse point/symlink/junction path: {path}");
                 return ValidationResult.Invalid;
             }
 
             var fingerprint = await ComputeFingerprintAsync(path, ct);
             if (fingerprint.Size != expectedSize || !string.Equals(fingerprint.Hash, expectedHash, StringComparison.OrdinalIgnoreCase))
             {
-                Console.WriteLine($"SKIP {label}: size/SHA-256 no longer matches stage plan: {path}");
+                Console.WriteLine($"SKIP {label}: size/SHA-256 no longer matches manifest or stage plan: {path}");
                 return ValidationResult.Invalid;
             }
 
@@ -341,10 +582,125 @@ public sealed class StagePlanService
         return new FileFingerprint(stream.Length, Convert.ToHexString(hash));
     }
 
-    private static bool IsReparsePoint(string path)
+    private static string NormalizeCommandPath(string path, string label)
     {
-        var attributes = File.GetAttributes(path);
-        return (attributes & FileAttributes.ReparsePoint) != 0;
+        var fullPath = Path.GetFullPath(path);
+        if (IsUncPath(fullPath))
+            throw new InvalidDataException($"{label} must be a local path. UNC/network paths are not supported for quarantine actions.");
+
+        if (HasAlternateDataStreamSyntax(fullPath))
+            throw new InvalidDataException($"{label} contains ':' outside the drive root, which is not allowed.");
+
+        return fullPath;
+    }
+
+    private static bool TryNormalizeDataPath(string? path, out string normalized, out string reason)
+    {
+        normalized = "";
+
+        if (string.IsNullOrWhiteSpace(path))
+        {
+            reason = "path is empty.";
+            return false;
+        }
+
+        if (!Path.IsPathFullyQualified(path))
+        {
+            reason = "path is not fully qualified.";
+            return false;
+        }
+
+        try
+        {
+            normalized = Path.GetFullPath(path);
+        }
+        catch (Exception ex) when (ex is ArgumentException or NotSupportedException or PathTooLongException or SecurityException)
+        {
+            reason = $"{ex.GetType().Name}: {ex.Message}";
+            return false;
+        }
+
+        if (IsUncPath(normalized))
+        {
+            reason = "UNC/network paths are not supported for destructive actions.";
+            return false;
+        }
+
+        if (HasAlternateDataStreamSyntax(normalized))
+        {
+            reason = "Alternate Data Stream style paths are not allowed.";
+            return false;
+        }
+
+        reason = "";
+        return true;
+    }
+
+    private static bool IsValidSha256(string? value)
+    {
+        if (string.IsNullOrWhiteSpace(value) || value.Length != 64)
+            return false;
+
+        foreach (var ch in value)
+        {
+            var isHex = ch is >= '0' and <= '9' or >= 'a' and <= 'f' or >= 'A' and <= 'F';
+            if (!isHex)
+                return false;
+        }
+
+        return true;
+    }
+
+    private static bool IsUncPath(string path) =>
+        path.StartsWith(@"\\", StringComparison.Ordinal) ||
+        path.StartsWith("//", StringComparison.Ordinal);
+
+    private static bool HasAlternateDataStreamSyntax(string path)
+    {
+        var root = Path.GetPathRoot(path) ?? "";
+        var remainder = path.Length >= root.Length ? path[root.Length..] : path;
+        return remainder.Contains(':', StringComparison.Ordinal);
+    }
+
+    private static void EnsureNoReparsePointInPath(string path, bool includeLeaf, string label)
+    {
+        if (ContainsReparsePointInPath(path, includeLeaf))
+            throw new IOException($"{label} contains a reparse point, symlink, or junction.");
+    }
+
+    private static bool ContainsReparsePointInPath(string path, bool includeLeaf)
+    {
+        try
+        {
+            var fullPath = Path.GetFullPath(path);
+            var root = Path.GetPathRoot(fullPath);
+            if (string.IsNullOrEmpty(root))
+                return false;
+
+            var parts = fullPath[root.Length..]
+                .Split(new[] { Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar }, StringSplitOptions.RemoveEmptyEntries);
+
+            var current = root;
+            for (var i = 0; i < parts.Length; i++)
+            {
+                if (!includeLeaf && i == parts.Length - 1)
+                    break;
+
+                current = Path.Combine(current, parts[i]);
+                if (!File.Exists(current) && !Directory.Exists(current))
+                    continue;
+
+                var attributes = File.GetAttributes(current);
+                if ((attributes & FileAttributes.ReparsePoint) != 0)
+                    return true;
+            }
+
+            return false;
+        }
+        catch (Exception ex) when (IsSafeIoException(ex))
+        {
+            return true;
+        }
     }
 
     private static string CreateUniqueSessionPath(string quarantineRoot)
@@ -438,21 +794,6 @@ public sealed class StagePlanService
     private static bool SamePath(string left, string right) =>
         string.Equals(Path.GetFullPath(left), Path.GetFullPath(right), StringComparison.OrdinalIgnoreCase);
 
-    private static string? GetFullPathSafe(string? path)
-    {
-        if (string.IsNullOrWhiteSpace(path))
-            return null;
-
-        try
-        {
-            return Path.GetFullPath(path);
-        }
-        catch (Exception ex) when (ex is ArgumentException or NotSupportedException or PathTooLongException)
-        {
-            return null;
-        }
-    }
-
     private static bool IsPathInside(string path, string root)
     {
         var fullPath = Path.GetFullPath(path).TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
@@ -462,6 +803,8 @@ public sealed class StagePlanService
             fullPath.StartsWith(fullRoot + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase) ||
             fullPath.StartsWith(fullRoot + Path.AltDirectorySeparatorChar, StringComparison.OrdinalIgnoreCase);
     }
+
+    private static long CountManifestEntries(QuarantineManifestDto manifest) => manifest.Entries.LongCount();
 
     private static bool IsSafeIoException(Exception ex) =>
         ex is UnauthorizedAccessException or IOException or PathTooLongException or FileNotFoundException or DirectoryNotFoundException or NotSupportedException or SecurityException;
@@ -477,6 +820,11 @@ public sealed class StagePlanService
     private sealed record ValidationResult(bool IsValid, FileFingerprint Fingerprint)
     {
         public static ValidationResult Invalid { get; } = new(false, new FileFingerprint(0, ""));
+    }
+
+    private sealed record ManifestFileValidation(bool IsValid, string QuarantinePath, FileFingerprint Fingerprint)
+    {
+        public static ManifestFileValidation Invalid { get; } = new(false, "", new FileFingerprint(0, ""));
     }
 
     private sealed class StagePlanDto

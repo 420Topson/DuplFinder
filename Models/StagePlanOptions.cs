@@ -13,19 +13,36 @@ public sealed class UndoQuarantineOptions
     public bool Restore { get; init; }
 }
 
+public sealed class PurgeQuarantineOptions
+{
+    public required string ManifestPath { get; init; }
+    public bool ConfirmPurge { get; init; }
+}
+
 public sealed record ApplyStagePlanResult(
     bool DryRun,
-    int Groups,
-    int Planned,
-    int Moved,
-    int Skipped,
-    int Failed,
+    long Groups,
+    long Planned,
+    long Moved,
+    long Skipped,
+    long Failed,
     string? QuarantineSessionPath,
     string? ManifestPath);
 
 public sealed record UndoQuarantineResult(
     bool DryRun,
-    int Planned,
-    int Restored,
-    int Skipped,
-    int Failed);
+    long ManifestEntries,
+    long EligibleEntries,
+    long Planned,
+    long Restored,
+    long Skipped,
+    long Failed);
+
+public sealed record PurgeQuarantineResult(
+    bool DryRun,
+    long ManifestEntries,
+    long EligibleEntries,
+    long Planned,
+    long Purged,
+    long Skipped,
+    long Failed);

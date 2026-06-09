@@ -118,11 +118,28 @@ public static class Program
                     var options = ParseUndoQuarantineOptions(rest);
                     var stagePlan = new StagePlanService();
                     var result = await stagePlan.UndoQuarantineAsync(options, cts.Token);
+                    Console.WriteLine($"Manifest entries: {result.ManifestEntries}");
+                    Console.WriteLine($"Eligible entries: {result.EligibleEntries}");
                     Console.WriteLine($"Planned: {result.Planned}");
                     Console.WriteLine($"Restored: {result.Restored}");
                     Console.WriteLine($"Skipped: {result.Skipped}");
                     Console.WriteLine($"Failed: {result.Failed}");
                     Console.WriteLine("No files were deleted. Existing original files were not overwritten.");
+                    return 0;
+                }
+
+                case "purge-quarantine":
+                {
+                    var options = ParsePurgeQuarantineOptions(rest);
+                    var stagePlan = new StagePlanService();
+                    var result = await stagePlan.PurgeQuarantineAsync(options, cts.Token);
+                    Console.WriteLine($"Manifest entries: {result.ManifestEntries}");
+                    Console.WriteLine($"Eligible entries: {result.EligibleEntries}");
+                    Console.WriteLine($"Planned: {result.Planned}");
+                    Console.WriteLine($"Purged: {result.Purged}");
+                    Console.WriteLine($"Skipped: {result.Skipped}");
+                    Console.WriteLine($"Failed: {result.Failed}");
+                    Console.WriteLine("Purge deletes only validated files inside the quarantine session. Original paths and KEEP files are not touched.");
                     return 0;
                 }
 
@@ -220,6 +237,22 @@ public static class Program
         {
             ManifestPath = manifestPath,
             Restore = HasFlag(args, "--restore")
+        };
+    }
+
+    private static PurgeQuarantineOptions ParsePurgeQuarantineOptions(string[] args)
+    {
+        var manifestPath = GetOption(args, "--manifest");
+        if (string.IsNullOrWhiteSpace(manifestPath))
+            throw new ArgumentException("Opcja --manifest jest wymagana, np. purge-quarantine --manifest duplfinder-quarantine-manifest.json --dry-run.");
+
+        if (HasFlag(args, "--confirm-purge") && HasFlag(args, "--dry-run"))
+            throw new ArgumentException("Użyj albo --confirm-purge, albo --dry-run. Domyślnie purge-quarantine działa jako dry-run.");
+
+        return new PurgeQuarantineOptions
+        {
+            ManifestPath = manifestPath,
+            ConfirmPurge = HasFlag(args, "--confirm-purge")
         };
     }
 
@@ -360,6 +393,7 @@ Komendy:
   prestage-report [opcje]
   apply-stage-plan [opcje]
   undo-quarantine [opcje]
+  purge-quarantine [opcje]
 
 Scan:
   scan <path> --db duplicates.db --profile sata-ssd
@@ -384,11 +418,13 @@ Opcje scan:
   --large-file-threshold <512MB>   Od jakiego rozmiaru stosować limit dużych plików
   --follow-reparse-points          Domyślnie wyłączone
   --record-skipped                 Zapisuje pominięte wpisy do DB, może zwiększyć bazę
+  Safety: scan only records metadata/hashes. It does not move or delete files.
 
 Duplicates:
   duplicates --db duplicates.db
   duplicates --db duplicates.db --min-size 1MB
   duplicates --db duplicates.db --min-size 1MB --export duplicates.csv
+  Safety: read-only against an existing DB; reports exact size + SHA-256 groups.
 
 Prestage report:
   prestage-report --db duplicates.db --out prestage-report.html
@@ -403,6 +439,7 @@ Opcje prestage-report:
   --db <plik>                      Istniejąca baza po skanowaniu, domyślnie duplicates.db
   --out <html>                     Ścieżka raportu HTML, wymagana
   --force                          Nadpisuje istniejący raport HTML
+  Safety: read-only against the DB. The HTML only exports stage-plan.json.
 
 Apply stage plan:
   apply-stage-plan --plan stage-plan.json --dry-run
@@ -417,6 +454,8 @@ Opcje apply-stage-plan:
   --plan <json>                     stage-plan.json z raportu prestage, wymagany
   --dry-run                         Tylko pokazuje plan, niczego nie przenosi
   --quarantine <folder>             Folder kwarantanny; tworzy session-* i manifest
+  Safety: defaults to dry-run. Validates untrusted plan paths, size, and SHA-256.
+          Moves only selected stage_paths. KEEP files are never moved.
 
 Undo quarantine:
   undo-quarantine --manifest "D:\DuplFinder-Quarantine\session-...\duplfinder-quarantine-manifest.json" --dry-run
@@ -430,12 +469,31 @@ Opcje undo-quarantine:
   --manifest <json>                 Manifest kwarantanny, wymagany
   --dry-run                         Tylko pokazuje plan, domyślnie
   --restore                         Przywraca pliki z manifestu bez nadpisywania
+  Safety: defaults to dry-run. Validates untrusted manifest paths, containment,
+          size, and SHA-256. No permanent deletion.
+
+Purge quarantine:
+  purge-quarantine --manifest "D:\DuplFinder-Quarantine\session-...\duplfinder-quarantine-manifest.json" --dry-run
+  purge-quarantine --manifest "D:\DuplFinder-Quarantine\session-...\duplfinder-quarantine-manifest.json" --confirm-purge
+
+  Default is dry-run/report only. --confirm-purge is required to delete anything.
+  Purge deletes only validated files inside the quarantine session that are listed
+  in the manifest with status moved. It never deletes original_path or keep_path.
+
+Opcje purge-quarantine:
+  --manifest <json>                 Manifest kwarantanny, wymagany
+  --dry-run                         Tylko pokazuje plan, domyślnie
+  --confirm-purge                   Usuwa zweryfikowane pliki z kwarantanny
+  Safety: validates untrusted manifest schema, paths, containment, size, SHA-256,
+          local paths only, and refuses UNC, ADS, symlink/junction/reparse paths.
 
 Stats:
   stats --db duplicates.db
+  Safety: read-only stats against an existing DB.
 
 Clean DB:
   clean-db --db duplicates.db
+  Safety: removes stale DB records only. It does not delete files from disk.
 """);
     }
 }
