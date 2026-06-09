@@ -15,6 +15,7 @@ $script:FirstScanResult = 'not run'
 $script:SecondScanResult = 'not run'
 $script:DuplicateValidationResult = 'not run'
 $script:PrestageReportValidationResult = 'not run'
+$script:FileTypeFilterValidationResult = 'not run'
 $script:PrestageReportPath = ''
 $script:MultiRootValidationResult = 'not run'
 $script:MultiRootPrestageReportPath = ''
@@ -90,8 +91,8 @@ function ConvertTo-TestLiteralPath {
 }
 
 function Get-DefaultParentWorkDir {
-    if (-not [string]::IsNullOrWhiteSpace($env:RUNNER_TEMP)) {
-        return $env:RUNNER_TEMP
+    if (-not [string]::IsNullOrWhiteSpace($script:ProjectFullPath)) {
+        return (Join-Path (Split-Path -Parent $script:ProjectFullPath) '.codex-work')
     }
 
     $tempPath = [System.IO.Path]::GetTempPath()
@@ -465,7 +466,7 @@ function Remove-GeneratedWorkspace {
     Assert-True -Condition $workspaceInfo.Name.StartsWith('duplfinder-full-smoke-', [StringComparison]::Ordinal) -Message 'Refusing to remove a workspace without the generated smoke-test prefix.'
     Assert-True -Condition ([string]::Equals($workspaceInfo.Parent.FullName, $parentInfo.FullName, [StringComparison]::OrdinalIgnoreCase)) -Message 'Refusing to remove a workspace outside the selected parent WorkDir.'
 
-    Remove-Item -LiteralPath $workspaceInfo.FullName -Recurse -Force
+    Remove-Item -LiteralPath (ConvertTo-TestLiteralPath -Path $workspaceInfo.FullName) -Recurse -Force
 }
 
 $projectPathCandidate = $ProjectPath
@@ -544,6 +545,56 @@ try {
     Assert-True -Condition ($missing.ExitCode -ne 0) -Message 'stats against a missing DB unexpectedly succeeded.'
     Assert-True -Condition (-not (Test-Path -LiteralPath $missingDb)) -Message 'Read-only command created the missing DB file.'
     $script:MissingDbValidationResult = 'passed: read-only command failed non-zero and did not create DB'
+
+    Write-Step 'File type filtering'
+    $filterRoot = Join-Path $workspaceRoot 'filter-dataset'
+    $filterOutput = Join-Path $outputRoot 'filtering'
+    New-Item -ItemType Directory -Force -Path $filterOutput | Out-Null
+
+    $filterTxt1 = New-TestFile -Path (Join-Path (Join-Path $filterRoot 'Docs') 'filter-a.txt') -Content 'FILTER TXT exact duplicate payload'
+    $filterTxt2 = New-TestFile -Path (Join-Path (Join-Path $filterRoot 'Docs Nested') 'filter-b.txt') -Content 'FILTER TXT exact duplicate payload'
+    $filterJpg1 = New-TestFile -Path (Join-Path (Join-Path $filterRoot 'Images') 'filter-a.jpg') -Content 'FILTER JPG exact duplicate payload'
+    $filterJpg2 = New-TestFile -Path (Join-Path (Join-Path $filterRoot 'Images Nested') 'filter-b.jpg') -Content 'FILTER JPG exact duplicate payload'
+    $filterNoExt1 = New-TestFile -Path (Join-Path (Join-Path $filterRoot 'No Extension') 'filter-noext-a') -Content 'FILTER NO EXTENSION exact duplicate payload'
+    $filterNoExt2 = New-TestFile -Path (Join-Path (Join-Path $filterRoot 'No Extension Nested') 'filter-noext-b') -Content 'FILTER NO EXTENSION exact duplicate payload'
+
+    $filterDefaultDb = Join-Path $filterOutput 'filter-default.db'
+    $filterDefaultCsv = Join-Path $filterOutput 'filter-default.csv'
+    $filterDefaultScan = Invoke-DuplFinder -CliArgs @('scan', $filterRoot, '--db', $filterDefaultDb, '--profile', 'sata-ssd', '--record-skipped') -LogName 'filter-default-scan.log'
+    Assert-True -Condition ($filterDefaultScan.ExitCode -eq 0) -Message 'Default filter scan failed.'
+    $filterDefaultDuplicates = Invoke-DuplFinder -CliArgs @('duplicates', '--db', $filterDefaultDb, '--export', $filterDefaultCsv) -LogName 'filter-default-duplicates.log'
+    Assert-True -Condition ($filterDefaultDuplicates.ExitCode -eq 0) -Message 'Default filter duplicates command failed.'
+    $filterDefaultRows = Read-CsvSafe -Path $filterDefaultCsv
+    Assert-DuplicateGroup -Rows $filterDefaultRows -ExpectedPaths @($filterTxt1, $filterTxt2) -ExpectedCopies 2 -Name 'default filter txt'
+    Assert-DuplicateGroup -Rows $filterDefaultRows -ExpectedPaths @($filterJpg1, $filterJpg2) -ExpectedCopies 2 -Name 'default filter jpg'
+    Assert-NoDuplicatePath -Rows $filterDefaultRows -Path $filterNoExt1 -Message 'Default filter reported an extensionless file without --include-no-extension.'
+    Assert-NoDuplicatePath -Rows $filterDefaultRows -Path $filterNoExt2 -Message 'Default filter reported an extensionless file without --include-no-extension.'
+
+    $filterTxtDb = Join-Path $filterOutput 'filter-include-txt.db'
+    $filterTxtCsv = Join-Path $filterOutput 'filter-include-txt.csv'
+    $filterTxtScan = Invoke-DuplFinder -CliArgs @('scan', $filterRoot, '--db', $filterTxtDb, '--profile', 'sata-ssd', '--include-ext', '.txt', '--record-skipped') -LogName 'filter-include-txt-scan.log'
+    Assert-True -Condition ($filterTxtScan.ExitCode -eq 0) -Message '--include-ext .txt scan failed.'
+    $filterTxtDuplicates = Invoke-DuplFinder -CliArgs @('duplicates', '--db', $filterTxtDb, '--export', $filterTxtCsv) -LogName 'filter-include-txt-duplicates.log'
+    Assert-True -Condition ($filterTxtDuplicates.ExitCode -eq 0) -Message '--include-ext .txt duplicates command failed.'
+    $filterTxtRows = Read-CsvSafe -Path $filterTxtCsv
+    Assert-DuplicateGroup -Rows $filterTxtRows -ExpectedPaths @($filterTxt1, $filterTxt2) -ExpectedCopies 2 -Name 'include-ext txt'
+    Assert-NoDuplicatePath -Rows $filterTxtRows -Path $filterJpg1 -Message '--include-ext .txt reported a .jpg file.'
+    Assert-NoDuplicatePath -Rows $filterTxtRows -Path $filterJpg2 -Message '--include-ext .txt reported a .jpg file.'
+    Assert-NoDuplicatePath -Rows $filterTxtRows -Path $filterNoExt1 -Message '--include-ext .txt reported an extensionless file without --include-no-extension.'
+    Assert-NoDuplicatePath -Rows $filterTxtRows -Path $filterNoExt2 -Message '--include-ext .txt reported an extensionless file without --include-no-extension.'
+
+    $filterNoExtDb = Join-Path $filterOutput 'filter-include-txt-noext.db'
+    $filterNoExtCsv = Join-Path $filterOutput 'filter-include-txt-noext.csv'
+    $filterNoExtScan = Invoke-DuplFinder -CliArgs @('scan', $filterRoot, '--db', $filterNoExtDb, '--profile', 'sata-ssd', '--include-ext', '.txt', '--include-no-extension', '--record-skipped') -LogName 'filter-include-txt-noext-scan.log'
+    Assert-True -Condition ($filterNoExtScan.ExitCode -eq 0) -Message '--include-ext .txt --include-no-extension scan failed.'
+    $filterNoExtDuplicates = Invoke-DuplFinder -CliArgs @('duplicates', '--db', $filterNoExtDb, '--export', $filterNoExtCsv) -LogName 'filter-include-txt-noext-duplicates.log'
+    Assert-True -Condition ($filterNoExtDuplicates.ExitCode -eq 0) -Message '--include-ext .txt --include-no-extension duplicates command failed.'
+    $filterNoExtRows = Read-CsvSafe -Path $filterNoExtCsv
+    Assert-DuplicateGroup -Rows $filterNoExtRows -ExpectedPaths @($filterTxt1, $filterTxt2) -ExpectedCopies 2 -Name 'include-ext txt with no-extension txt'
+    Assert-DuplicateGroup -Rows $filterNoExtRows -ExpectedPaths @($filterNoExt1, $filterNoExt2) -ExpectedCopies 2 -Name 'include-no-extension'
+    Assert-NoDuplicatePath -Rows $filterNoExtRows -Path $filterJpg1 -Message '--include-ext .txt --include-no-extension reported a .jpg file.'
+    Assert-NoDuplicatePath -Rows $filterNoExtRows -Path $filterJpg2 -Message '--include-ext .txt --include-no-extension reported a .jpg file.'
+    $script:FileTypeFilterValidationResult = 'passed: default whitelist, --include-ext, and --include-no-extension behavior validated'
 
     Write-Step 'Profile scans and duplicate correctness'
     $profileSpecs = @(
@@ -1027,6 +1078,7 @@ try {
     Write-Host "First scan result: $script:FirstScanResult"
     Write-Host "Second scan/cache result: $script:SecondScanResult"
     Write-Host "Duplicate validation result: $script:DuplicateValidationResult"
+    Write-Host "File type filter validation result: $script:FileTypeFilterValidationResult"
     Write-Host "Prestage report validation result: $script:PrestageReportValidationResult"
     Write-Host "Multi-root validation result: $script:MultiRootValidationResult"
     Write-Host "Apply stage plan validation result: $script:ApplyStagePlanValidationResult"
@@ -1055,6 +1107,7 @@ catch {
     Write-Host "First scan result: $script:FirstScanResult"
     Write-Host "Second scan/cache result: $script:SecondScanResult"
     Write-Host "Duplicate validation result: $script:DuplicateValidationResult"
+    Write-Host "File type filter validation result: $script:FileTypeFilterValidationResult"
     Write-Host "Prestage report validation result: $script:PrestageReportValidationResult"
     Write-Host "Multi-root validation result: $script:MultiRootValidationResult"
     Write-Host "Apply stage plan validation result: $script:ApplyStagePlanValidationResult"

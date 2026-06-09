@@ -1,8 +1,10 @@
 # DuplFinder
 
-DuplFinder is a Windows-focused .NET 8 CLI tool for finding exact duplicate files.
+DuplFinder is a Windows-focused .NET 8 tool for finding exact duplicate files.
 
 It scans a selected drive or folder, stores file metadata and SHA-256 hashes in SQLite, and reports files that have the same size and the same full hash.
+
+The CLI remains the core engine. The optional v1.1.0 GUI MVP is a WPF wrapper that builds and runs the same CLI commands with safer workflow gating and a visible command preview.
 
 ## Safety
 
@@ -47,7 +49,7 @@ DuplFinder is not:
 - a perceptual image/audio/video similarity tool
 - a fuzzy matching or "DNA" fingerprint tool
 - a cloud scanner
-- a GUI app
+- a replacement for the CLI engine
 
 ## Requirements
 
@@ -61,7 +63,16 @@ The code targets Windows usage, but most of the implementation is plain .NET and
 ```powershell
 dotnet restore
 dotnet build .\DuplicateFinder.csproj -c Release
+dotnet build .\DuplFinder.Gui\DuplFinder.Gui.csproj -c Release
 ```
+
+The GUI project is:
+
+```text
+.\DuplFinder.Gui\DuplFinder.Gui.csproj
+```
+
+It targets `net8.0-windows` and uses WPF.
 
 ## Run
 
@@ -70,6 +81,14 @@ Use `scan` first to create and populate a SQLite database:
 ```powershell
 dotnet run --project .\DuplicateFinder.csproj -- scan "D:" --db duplicates.db
 ```
+
+The GUI can be launched from its build output:
+
+```powershell
+.\DuplFinder.Gui\bin\Release\net8.0-windows\DuplFinder.Gui.exe
+```
+
+The GUI does not replace the CLI. It shows a read-only output pane, drive/folder selection, file type checkboxes, workflow controls, and the exact command preview. Commands run only after clicking `Run`, and safety-sensitive actions require confirmation.
 
 You can scan any drive or folder:
 
@@ -135,6 +154,8 @@ Useful options:
 --large-file-threshold <512MB>   Size where large-file parallelism limit applies
 --follow-reparse-points          Follow symlinks/junctions; off by default
 --record-skipped                 Store skipped files/directories in the DB
+--include-ext .jpg,.png,.mp4     Scan only selected extensions
+--include-no-extension           Include files with no extension; skipped by default
 ```
 
 Performance profiles set scan defaults. Explicit CLI flags are applied after the profile, so they override it.
@@ -144,6 +165,7 @@ dotnet run --project .\DuplicateFinder.csproj -- scan "D:" --db duplicates.db --
 dotnet run --project .\DuplicateFinder.csproj -- scan "D:" --db duplicates.db --profile sata-ssd
 dotnet run --project .\DuplicateFinder.csproj -- scan "D:" --db duplicates.db --profile nvme
 dotnet run --project .\DuplicateFinder.csproj -- scan "C:\Users\You\Pictures" --db pictures.db --profile nvme --threads 4
+dotnet run --project .\DuplicateFinder.csproj -- scan "D:\Photos" --db photos.db --include-ext .jpg,.jpeg,.png --include-no-extension
 ```
 
 Profiles:
@@ -286,9 +308,44 @@ The stored hash prefix is only a helper field for possible future optimization. 
 
 ## Filtering
 
-The MVP scans a default whitelist of common document, image, video, and audio extensions. It skips common technical/system/cache extensions and skips reparse points unless `--follow-reparse-points` is used.
+DuplFinder scans a default whitelist of common document, image, video, and audio extensions. It skips common technical/system/cache extensions and skips reparse points unless `--follow-reparse-points` is used.
 
-Custom filtering flags are not part of the current README because they are not part of the current MVP CLI.
+Files with no extension are skipped by default. Use `--include-no-extension` only when you intentionally want extensionless files included.
+
+Use `--include-ext` to scan a specific comma-separated extension list:
+
+```powershell
+dotnet run --project .\DuplicateFinder.csproj -- scan "D:\Photos" --db photos.db --include-ext .jpg,.jpeg,.png
+dotnet run --project .\DuplicateFinder.csproj -- scan "D:\Mixed" --db mixed.db --include-ext .txt,.pdf --include-no-extension
+```
+
+Extension filtering only decides which files are scanned. Duplicate identity remains exact `size + full SHA-256` after files are hashed.
+
+Windows/system folders are skipped by default, including root Windows folders such as `C:\Windows` and `<drive>:\Windows`, plus protected names such as `$Recycle.Bin` and `System Volume Information`.
+
+## GUI MVP
+
+The v1.1.0 GUI MVP is a Windows WPF wrapper around the CLI.
+
+It provides:
+
+- read-only console output pane
+- drive list with multi-select checkboxes
+- `Choose folder...` picker
+- selected scan targets list with remove/clear controls
+- scan profile selection
+- real file type checkboxes backed by CLI options
+- `Files with no extension` checkbox, unchecked by default
+- real-time command preview
+- minimum duplicate file size slider for `duplicates --min-size`
+- workflow gating for DB, report, stage-plan, manifest, dry-run, quarantine, undo, and purge steps
+- confirmation prompts for quarantine, restore, purge, and clean-db actions
+
+If multiple scan targets are selected, the GUI runs sequential `scan` commands into the same DB. It does not run multiple scans in parallel into one DB.
+
+The GUI uses `ProcessStartInfo.ArgumentList` and does not run commands through `cmd.exe /c`.
+
+The GUI never changes duplicate identity, never implements fuzzy matching, and never directly deletes original duplicate files. The safe CLI quarantine workflow remains the source of truth.
 
 ## Validation
 
@@ -297,6 +354,7 @@ Run the same checks used by the project workflow:
 ```powershell
 dotnet restore
 dotnet build .\DuplicateFinder.csproj -c Release
+dotnet build .\DuplFinder.Gui\DuplFinder.Gui.csproj -c Release
 .\scripts\smoke-test.ps1 -ProjectPath .\DuplicateFinder.csproj
 .\scripts\full-smoke-test.ps1 -ProjectPath .\DuplicateFinder.csproj -Configuration Release
 ```

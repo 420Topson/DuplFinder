@@ -1,0 +1,240 @@
+<Window x:Class="DuplFinder.Gui.MainWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="DuplFinder GUI MVP" Height="900" Width="1280" MinHeight="720" MinWidth="1040"
+        Background="#f3f4f6">
+    <Grid Margin="12">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="2*" />
+            <RowDefinition Height="3*" />
+            <RowDefinition Height="Auto" />
+        </Grid.RowDefinitions>
+
+        <GroupBox Header="Read-only command output" Grid.Row="0" Margin="0,0,0,10">
+            <TextBox x:Name="OutputTextBox"
+                     FontFamily="Consolas"
+                     FontSize="13"
+                     IsReadOnly="True"
+                     AcceptsReturn="True"
+                     AcceptsTab="False"
+                     TextWrapping="NoWrap"
+                     VerticalScrollBarVisibility="Auto"
+                     HorizontalScrollBarVisibility="Auto"
+                     Background="#111827"
+                     Foreground="#d1d5db"
+                     BorderThickness="0"
+                     Padding="10" />
+        </GroupBox>
+
+        <TabControl x:Name="MainTabs" Grid.Row="1" SelectionChanged="OnControlsChanged">
+            <TabItem Header="Scan">
+                <ScrollViewer VerticalScrollBarVisibility="Auto">
+                    <Grid Margin="10">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="2*" />
+                            <ColumnDefinition Width="3*" />
+                        </Grid.ColumnDefinitions>
+
+                        <StackPanel Grid.Column="0" Margin="0,0,12,0">
+                            <TextBlock Text="Available drives" FontWeight="Bold" Margin="0,0,0,6" />
+                            <ListBox x:Name="DriveListBox" Height="180" />
+                            <StackPanel Orientation="Horizontal" Margin="0,8,0,0">
+                                <Button Content="Refresh drives" Click="OnRefreshDrives" Margin="0,0,8,0" />
+                                <Button Content="Choose folder..." Click="OnChooseFolder" />
+                            </StackPanel>
+
+                            <TextBlock Text="Selected scan targets" FontWeight="Bold" Margin="0,16,0,6" />
+                            <ListBox x:Name="SelectedTargetsListBox" Height="160" SelectionChanged="OnControlsChanged" />
+                            <StackPanel Orientation="Horizontal" Margin="0,8,0,0">
+                                <Button Content="Remove selected" Click="OnRemoveSelectedTarget" Margin="0,0,8,0" />
+                                <Button Content="Clear all" Click="OnClearTargets" />
+                            </StackPanel>
+                            <TextBlock x:Name="TargetWarningTextBlock" Foreground="#92400e" TextWrapping="Wrap" Margin="0,8,0,0" />
+                        </StackPanel>
+
+                        <StackPanel Grid.Column="1">
+                            <TextBlock Text="Scan settings" FontWeight="Bold" Margin="0,0,0,6" />
+                            <Grid>
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="Auto" />
+                                    <ColumnDefinition Width="*" />
+                                    <ColumnDefinition Width="Auto" />
+                                </Grid.ColumnDefinitions>
+                                <TextBlock Text="Database:" VerticalAlignment="Center" Margin="0,0,8,0" />
+                                <TextBox x:Name="DbPathTextBox" Grid.Column="1" TextChanged="OnControlsChanged" />
+                                <Button Grid.Column="2" Content="Browse..." Click="OnBrowseDb" Margin="8,0,0,0" />
+                            </Grid>
+
+                            <StackPanel Orientation="Horizontal" Margin="0,10,0,0">
+                                <TextBlock Text="Profile:" VerticalAlignment="Center" Margin="0,0,8,0" />
+                                <ComboBox x:Name="ProfileComboBox" Width="190" SelectionChanged="OnControlsChanged">
+                                    <ComboBoxItem Content="HDD / older PC" Tag="hdd" />
+                                    <ComboBoxItem Content="SATA SSD / balanced" Tag="sata-ssd" IsSelected="True" />
+                                    <ComboBoxItem Content="NVMe / fast PC" Tag="nvme" />
+                                </ComboBox>
+                                <CheckBox x:Name="RecordSkippedCheckBox" Content="Record skipped" Margin="18,0,0,0" Checked="OnControlsChanged" Unchecked="OnControlsChanged" />
+                                <CheckBox x:Name="FollowReparseCheckBox" Content="Follow reparse points" Margin="18,0,0,0" Checked="OnControlsChanged" Unchecked="OnControlsChanged" />
+                            </StackPanel>
+
+                            <TextBlock Text="DuplFinder scans selected file types only. System folders such as Windows are skipped by default. Files with no extension are skipped by default unless explicitly enabled. Exact duplicates are detected by file size + full SHA-256."
+                                       TextWrapping="Wrap" Foreground="#374151" Margin="0,12,0,6" />
+                            <TextBlock x:Name="FileTypeCountTextBlock" FontWeight="SemiBold" Margin="0,0,0,6" />
+                            <ScrollViewer Height="260" VerticalScrollBarVisibility="Auto">
+                                <StackPanel x:Name="FileTypeGroupsPanel" />
+                            </ScrollViewer>
+                        </StackPanel>
+                    </Grid>
+                </ScrollViewer>
+            </TabItem>
+
+            <TabItem Header="Duplicates">
+                <StackPanel Margin="10">
+                    <TextBlock Text="Find exact duplicate groups in an existing database." FontWeight="Bold" />
+                    <TextBlock Text="Smaller files can create many duplicate groups. Increase this value to focus on larger files." TextWrapping="Wrap" Margin="0,8,0,8" />
+                    <Slider x:Name="MinSizeSlider" Minimum="0" Maximum="8" TickFrequency="1" IsSnapToTickEnabled="True" ValueChanged="OnControlsChanged" />
+                    <TextBlock x:Name="MinSizeLabel" Margin="0,4,0,12" />
+                    <CheckBox x:Name="ExportCsvCheckBox" Content="Export CSV" Checked="OnControlsChanged" Unchecked="OnControlsChanged" />
+                    <Grid Margin="0,6,0,0">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="Auto" />
+                            <ColumnDefinition Width="*" />
+                            <ColumnDefinition Width="Auto" />
+                        </Grid.ColumnDefinitions>
+                        <TextBlock Text="CSV:" VerticalAlignment="Center" Margin="0,0,8,0" />
+                        <TextBox x:Name="CsvPathTextBox" Grid.Column="1" TextChanged="OnControlsChanged" />
+                        <Button Grid.Column="2" Content="Browse..." Click="OnBrowseCsv" Margin="8,0,0,0" />
+                    </Grid>
+                </StackPanel>
+            </TabItem>
+
+            <TabItem Header="Prestage Report">
+                <StackPanel Margin="10">
+                    <TextBlock Text="Generate a local HTML review report. It does not move or delete files." FontWeight="Bold" />
+                    <Grid Margin="0,12,0,0">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="Auto" />
+                            <ColumnDefinition Width="*" />
+                            <ColumnDefinition Width="Auto" />
+                        </Grid.ColumnDefinitions>
+                        <TextBlock Text="HTML report:" VerticalAlignment="Center" Margin="0,0,8,0" />
+                        <TextBox x:Name="ReportPathTextBox" Grid.Column="1" TextChanged="OnControlsChanged" />
+                        <Button Grid.Column="2" Content="Browse..." Click="OnBrowseReport" Margin="8,0,0,0" />
+                    </Grid>
+                    <CheckBox x:Name="ReportForceCheckBox" Content="Overwrite existing report (--force)" Margin="0,10,0,0" Checked="OnControlsChanged" Unchecked="OnControlsChanged" />
+                    <CheckBox x:Name="OpenReportCheckBox" Content="Open report after generation" Margin="0,6,0,0" />
+                    <Button x:Name="OpenReportButton" Content="Open report" Width="120" HorizontalAlignment="Left" Margin="0,12,0,0" Click="OnOpenReport" />
+                </StackPanel>
+            </TabItem>
+
+            <TabItem Header="Apply Stage Plan">
+                <StackPanel Margin="10">
+                    <TextBlock Text="Apply a browser-exported stage-plan.json. Dry-run is the default." FontWeight="Bold" />
+                    <Grid Margin="0,12,0,0">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="Auto" />
+                            <ColumnDefinition Width="*" />
+                            <ColumnDefinition Width="Auto" />
+                        </Grid.ColumnDefinitions>
+                        <TextBlock Text="Stage plan:" VerticalAlignment="Center" Margin="0,0,8,0" />
+                        <TextBox x:Name="StagePlanPathTextBox" Grid.Column="1" TextChanged="OnControlsChanged" />
+                        <Button Grid.Column="2" Content="Browse..." Click="OnBrowseStagePlan" Margin="8,0,0,0" />
+                    </Grid>
+                    <StackPanel Orientation="Horizontal" Margin="0,12,0,0">
+                        <RadioButton x:Name="ApplyDryRunRadio" Content="Dry-run" IsChecked="True" Checked="OnControlsChanged" />
+                        <RadioButton x:Name="ApplyQuarantineRadio" Content="Quarantine" Margin="18,0,0,0" Checked="OnControlsChanged" />
+                    </StackPanel>
+                    <Grid Margin="0,10,0,0">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="Auto" />
+                            <ColumnDefinition Width="*" />
+                            <ColumnDefinition Width="Auto" />
+                        </Grid.ColumnDefinitions>
+                        <TextBlock Text="Quarantine folder:" VerticalAlignment="Center" Margin="0,0,8,0" />
+                        <TextBox x:Name="QuarantineFolderTextBox" Grid.Column="1" TextChanged="OnControlsChanged" />
+                        <Button Grid.Column="2" Content="Browse..." Click="OnBrowseQuarantineFolder" Margin="8,0,0,0" />
+                    </Grid>
+                    <TextBlock Text="Quarantine moves selected STAGE files into a DuplFinder session. KEEP files are never moved or modified."
+                               TextWrapping="Wrap" Foreground="#374151" Margin="0,12,0,0" />
+                </StackPanel>
+            </TabItem>
+
+            <TabItem Header="Undo Quarantine">
+                <StackPanel Margin="10">
+                    <TextBlock Text="Restore quarantined files from a manifest. Dry-run is the default." FontWeight="Bold" />
+                    <Grid Margin="0,12,0,0">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="Auto" />
+                            <ColumnDefinition Width="*" />
+                            <ColumnDefinition Width="Auto" />
+                        </Grid.ColumnDefinitions>
+                        <TextBlock Text="Manifest:" VerticalAlignment="Center" Margin="0,0,8,0" />
+                        <TextBox x:Name="ManifestPathTextBox" Grid.Column="1" TextChanged="OnControlsChanged" />
+                        <Button Grid.Column="2" Content="Browse..." Click="OnBrowseManifest" Margin="8,0,0,0" />
+                    </Grid>
+                    <StackPanel Orientation="Horizontal" Margin="0,12,0,0">
+                        <RadioButton x:Name="UndoDryRunRadio" Content="Dry-run" IsChecked="True" Checked="OnControlsChanged" />
+                        <RadioButton x:Name="UndoRestoreRadio" Content="Restore" Margin="18,0,0,0" Checked="OnControlsChanged" />
+                    </StackPanel>
+                </StackPanel>
+            </TabItem>
+
+            <TabItem Header="Purge Quarantine">
+                <StackPanel Margin="10">
+                    <TextBlock Text="Purge deletes only validated files already inside the DuplFinder quarantine session and listed in the manifest." FontWeight="Bold" TextWrapping="Wrap" />
+                    <StackPanel Orientation="Horizontal" Margin="0,12,0,0">
+                        <RadioButton x:Name="PurgeDryRunRadio" Content="Dry-run" IsChecked="True" Checked="OnControlsChanged" />
+                        <RadioButton x:Name="PurgeConfirmRadio" Content="Confirm purge" Margin="18,0,0,0" Checked="OnControlsChanged" />
+                    </StackPanel>
+                </StackPanel>
+            </TabItem>
+
+            <TabItem Header="Stats / Clean DB">
+                <StackPanel Margin="10">
+                    <TextBlock Text="Stats is read-only. Clean DB removes stale database records only; it does not delete files." FontWeight="Bold" TextWrapping="Wrap" />
+                    <StackPanel Orientation="Horizontal" Margin="0,12,0,0">
+                        <RadioButton x:Name="StatsRadio" Content="Stats" IsChecked="True" Checked="OnControlsChanged" />
+                        <RadioButton x:Name="CleanDbRadio" Content="Clean DB" Margin="18,0,0,0" Checked="OnControlsChanged" />
+                    </StackPanel>
+                </StackPanel>
+            </TabItem>
+
+            <TabItem Header="Settings / Paths">
+                <StackPanel Margin="10">
+                    <TextBlock Text="Paths" FontWeight="Bold" />
+                    <Grid Margin="0,10,0,0">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="Auto" />
+                            <ColumnDefinition Width="*" />
+                            <ColumnDefinition Width="Auto" />
+                        </Grid.ColumnDefinitions>
+                        <TextBlock Text="CLI executable:" VerticalAlignment="Center" Margin="0,0,8,0" />
+                        <TextBox x:Name="CliPathTextBox" Grid.Column="1" TextChanged="OnControlsChanged" />
+                        <Button Grid.Column="2" Content="Browse..." Click="OnBrowseCli" Margin="8,0,0,0" />
+                    </Grid>
+                    <TextBlock Text="The GUI runs the existing CLI executable. It does not reimplement duplicate detection."
+                               TextWrapping="Wrap" Foreground="#374151" Margin="0,10,0,0" />
+                </StackPanel>
+            </TabItem>
+        </TabControl>
+
+        <Border Grid.Row="2" BorderBrush="#d1d5db" BorderThickness="1" Background="White" Padding="10" Margin="0,10,0,0">
+            <Grid>
+                <Grid.RowDefinitions>
+                    <RowDefinition Height="Auto" />
+                    <RowDefinition Height="Auto" />
+                    <RowDefinition Height="Auto" />
+                </Grid.RowDefinitions>
+                <TextBlock x:Name="ReadyTextBlock" Grid.Row="0" Foreground="#92400e" Margin="0,0,0,6" />
+                <TextBox x:Name="CommandPreviewTextBox" Grid.Row="1" FontFamily="Consolas" FontSize="13" IsReadOnly="True"
+                         MinHeight="58" TextWrapping="Wrap" VerticalScrollBarVisibility="Auto" />
+                <StackPanel Grid.Row="2" Orientation="Horizontal" HorizontalAlignment="Right" Margin="0,8,0,0">
+                    <Button x:Name="RunCommandButton" Content="Run" Width="110" Click="OnRunCommand" MouseEnter="OnRunButtonMouseEnter" Margin="0,0,8,0" />
+                    <Button x:Name="CancelButton" Content="Cancel" Width="90" Click="OnCancelCommand" IsEnabled="False" Margin="0,0,8,0" />
+                    <Button Content="Copy command" Width="120" Click="OnCopyCommand" Margin="0,0,8,0" />
+                    <Button Content="Clear output" Width="110" Click="OnClearOutput" Margin="0,0,8,0" />
+                    <Button Content="Open output folder" Width="150" Click="OnOpenOutputFolder" />
+                </StackPanel>
+            </Grid>
+        </Border>
+    </Grid>
+</Window>

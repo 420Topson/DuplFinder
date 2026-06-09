@@ -15,4 +15,6 @@ public sealed class ScanOptions
     public long LargeFileThresholdBytes { get; init; } = 512L * 1024 * 1024;
     public bool FollowReparsePoints { get; init; }
     public bool RecordSkipped { get; init; }
+    public IReadOnlyCollection<string> IncludeExtensions { get; init; } = Array.Empty<string>();
+    public bool IncludeNoExtension { get; init; }
 }
