@@ -14,6 +14,10 @@ $script:ProfileResults = New-Object System.Collections.Generic.List[string]
 $script:FirstScanResult = 'not run'
 $script:SecondScanResult = 'not run'
 $script:DuplicateValidationResult = 'not run'
+$script:PrestageReportValidationResult = 'not run'
+$script:PrestageReportPath = ''
+$script:MultiRootValidationResult = 'not run'
+$script:MultiRootPrestageReportPath = ''
 $script:CleanDbValidationResult = 'not run'
 $script:MissingDbValidationResult = 'not run'
 $script:EmptyFileBehavior = ''
@@ -44,11 +48,29 @@ function Get-DefaultParentWorkDir {
         return $env:RUNNER_TEMP
     }
 
-    if (-not [string]::IsNullOrWhiteSpace($env:TEMP)) {
-        return $env:TEMP
+    $tempPath = [System.IO.Path]::GetTempPath()
+    if (-not (Test-IsDefaultScanExcludedPath -Path $tempPath)) {
+        return $tempPath
     }
 
-    return [System.IO.Path]::GetTempPath()
+    $localAppData = $env:LOCALAPPDATA
+    if ([string]::IsNullOrWhiteSpace($localAppData)) {
+        $localAppData = [Environment]::GetFolderPath([Environment+SpecialFolder]::LocalApplicationData)
+    }
+
+    if (-not [string]::IsNullOrWhiteSpace($localAppData)) {
+        return (Join-Path $localAppData 'DuplFinderSmoke')
+    }
+
+    return $tempPath
+}
+
+function Test-IsDefaultScanExcludedPath {
+    param([string]$Path)
+
+    $normalized = $Path.Replace([System.IO.Path]::AltDirectorySeparatorChar, [System.IO.Path]::DirectorySeparatorChar).TrimEnd([System.IO.Path]::DirectorySeparatorChar)
+    return $normalized.Contains('\AppData\Local\Temp', [StringComparison]::OrdinalIgnoreCase) -or
+        $normalized.Contains('\AppData\Local\Microsoft\Windows', [StringComparison]::OrdinalIgnoreCase)
 }
 
 function New-TestFileBytes {
@@ -267,6 +289,44 @@ function Validate-DuplicateRows {
     Assert-NoDuplicatePath -Rows $Rows -Path $CasePaths.SkippedExe -Message "$Context skipped .exe file was reported as an OK duplicate."
 }
 
+function Assert-PrestageReportHtml {
+    param(
+        [string]$Path,
+        [string[]]$KnownDuplicatePaths,
+        [string[]]$AbsentPaths = @()
+    )
+
+    Assert-True -Condition (Test-Path -LiteralPath $Path) -Message "Prestage report HTML was not created: $Path"
+
+    $html = Get-Content -LiteralPath $Path -Raw
+    $reportDataMatch = [regex]::Match($html, '<script id="report-data" type="application/json">(?<json>.*?)</script>', [System.Text.RegularExpressions.RegexOptions]::Singleline)
+    Assert-True -Condition $reportDataMatch.Success -Message 'Prestage report is missing embedded local JSON report data.'
+    $reportData = $reportDataMatch.Groups['json'].Value | ConvertFrom-Json
+    $reportPaths = @($reportData.groups | ForEach-Object { $_.files } | ForEach-Object { [string]$_.path })
+
+    Assert-True -Condition ($html.Contains('duplfinder.stage-plan.v1', [StringComparison]::Ordinal)) -Message 'Prestage report is missing the stage-plan schema marker.'
+    Assert-True -Condition ($html.Contains('Export stage-plan.json', [StringComparison]::Ordinal)) -Message 'Prestage report is missing the export button text.'
+    Assert-True -Condition ($html.Contains('Files in duplicate groups', [StringComparison]::Ordinal)) -Message 'Prestage report is missing the files-in-duplicate-groups summary label.'
+    Assert-True -Condition ($html.Contains('Redundant files', [StringComparison]::Ordinal)) -Message 'Prestage report is missing the redundant files summary label.'
+    Assert-True -Condition ($html.Contains('This report does not move or delete files. It only exports a stage plan.', [StringComparison]::Ordinal)) -Message 'Prestage report is missing the no move/delete safety warning.'
+    Assert-True -Condition ($html.Contains('stageAllExceptKeep(group, groupState, index)', [StringComparison]::Ordinal)) -Message 'Prestage report KEEP handler should stage all non-KEEP files in the changed group.'
+
+    foreach ($knownPath in $KnownDuplicatePaths) {
+        Assert-True -Condition (Test-PathInList -Paths $reportPaths -Path $knownPath) -Message "Prestage report is missing expected duplicate path: $knownPath"
+    }
+
+    foreach ($absentPath in $AbsentPaths) {
+        Assert-True -Condition (-not (Test-PathInList -Paths $reportPaths -Path $absentPath)) -Message "Prestage report unexpectedly contains a skipped/non-duplicate path: $absentPath"
+    }
+
+    Assert-True -Condition (($html.Contains('#0f1115', [StringComparison]::Ordinal)) -or ($html.Contains('#171a21', [StringComparison]::Ordinal))) -Message 'Prestage report is missing expected dark theme color markers.'
+    Assert-True -Condition (-not $html.Contains('https://', [StringComparison]::OrdinalIgnoreCase)) -Message 'Prestage report should not reference https:// resources.'
+    Assert-True -Condition (-not $html.Contains('http://', [StringComparison]::OrdinalIgnoreCase)) -Message 'Prestage report should not reference http:// resources.'
+    Assert-True -Condition (-not $html.Contains('<script src=', [StringComparison]::OrdinalIgnoreCase)) -Message 'Prestage report should not load external scripts.'
+    Assert-True -Condition (-not [regex]::IsMatch($html, '<link\b', [System.Text.RegularExpressions.RegexOptions]::IgnoreCase)) -Message 'Prestage report should not depend on external linked CSS/resources.'
+    Assert-True -Condition (-not [regex]::IsMatch($html, '@import\b', [System.Text.RegularExpressions.RegexOptions]::IgnoreCase)) -Message 'Prestage report should not use external CSS imports.'
+}
+
 function Get-FirstMetric {
     param(
         [string]$Text,
@@ -451,6 +511,51 @@ try {
     Assert-True -Condition ($cacheDuplicates.ExitCode -eq 0) -Message 'duplicates command after cache scan failed.'
     Validate-DuplicateRows -Rows (Read-CsvSafe -Path $cacheCsv) -CasePaths $casePaths -AlphaCopies 3 -Context 'after cache'
 
+    Write-Step 'Prestage report behavior'
+    $prestageReportPath = Join-Path $outputRoot 'prestage-report.html'
+    $prestageReport = Invoke-DuplFinder -CliArgs @('prestage-report', '--db', $primaryDb, '--out', $prestageReportPath) -LogName 'prestage-report.log'
+    Assert-True -Condition ($prestageReport.ExitCode -eq 0) -Message 'prestage-report command failed.'
+    Assert-PrestageReportHtml `
+        -Path $prestageReportPath `
+        -KnownDuplicatePaths @($alpha1, $alpha2, $alpha3, $beta1, $beta2, $gamma1, $gamma2) `
+        -AbsentPaths @($sameSize1, $sameSize2, $sameName1, $sameName2, $skippedExe)
+    $script:PrestageReportPath = $prestageReportPath
+    $script:PrestageReportValidationResult = "passed: generated local-only HTML report at $prestageReportPath"
+
+    Write-Step 'Multi-root duplicate accumulation'
+    $multiRootA = Join-Path $workspaceRoot 'dataset-root-a'
+    $multiRootB = Join-Path $workspaceRoot 'dataset-root-b'
+    $multiRootContent = "MULTIROOT exact duplicate payload`nshared across scan roots"
+    $multiRootAFile = New-TestFile -Path (Join-Path (Join-Path (Join-Path $multiRootA 'Root A Nested') 'Level One') 'shared-root-copy.txt') -Content $multiRootContent
+    $multiRootBFile = New-TestFile -Path (Join-Path (Join-Path (Join-Path $multiRootB 'Root B Folder With Spaces') 'Level Two') 'shared-root-copy-renamed.md') -Content $multiRootContent
+    $multiRootUnique = New-TestFile -Path (Join-Path (Join-Path $multiRootB 'Root B Folder With Spaces') 'unique-root-file.txt') -Content 'MULTIROOT unique payload that must not be duplicated'
+
+    $multiRootDb = Join-Path $outputRoot 'multi-root.db'
+    $multiRootCsv = Join-Path $outputRoot 'duplicates-multi-root.csv'
+    $multiRootReportPath = Join-Path $outputRoot 'prestage-report-multi-root.html'
+
+    $scanRootA = Invoke-DuplFinder -CliArgs @('scan', $multiRootA, '--db', $multiRootDb, '--profile', 'sata-ssd') -LogName 'scan-multi-root-a.log'
+    Assert-True -Condition ($scanRootA.ExitCode -eq 0) -Message 'First multi-root scan failed.'
+
+    $scanRootB = Invoke-DuplFinder -CliArgs @('scan', $multiRootB, '--db', $multiRootDb, '--profile', 'sata-ssd') -LogName 'scan-multi-root-b.log'
+    Assert-True -Condition ($scanRootB.ExitCode -eq 0) -Message 'Second multi-root scan into the same DB failed.'
+
+    $multiRootDuplicates = Invoke-DuplFinder -CliArgs @('duplicates', '--db', $multiRootDb, '--export', $multiRootCsv) -LogName 'duplicates-multi-root.log'
+    Assert-True -Condition ($multiRootDuplicates.ExitCode -eq 0) -Message 'duplicates command failed for multi-root DB.'
+
+    $multiRootRows = Read-CsvSafe -Path $multiRootCsv
+    Assert-DuplicateGroup -Rows $multiRootRows -ExpectedPaths @($multiRootAFile, $multiRootBFile) -ExpectedCopies 2 -Name 'multi-root cross-root'
+    Assert-NoDuplicatePath -Rows $multiRootRows -Path $multiRootUnique -Message 'Unique multi-root file was reported as a duplicate.'
+
+    $multiRootPrestage = Invoke-DuplFinder -CliArgs @('prestage-report', '--db', $multiRootDb, '--out', $multiRootReportPath) -LogName 'prestage-report-multi-root.log'
+    Assert-True -Condition ($multiRootPrestage.ExitCode -eq 0) -Message 'prestage-report command failed for multi-root DB.'
+    Assert-PrestageReportHtml `
+        -Path $multiRootReportPath `
+        -KnownDuplicatePaths @($multiRootAFile, $multiRootBFile) `
+        -AbsentPaths @($multiRootUnique)
+    $script:MultiRootPrestageReportPath = $multiRootReportPath
+    $script:MultiRootValidationResult = 'passed: separate scan roots accumulated into one DB and grouped by exact size + SHA-256'
+
     Write-Step 'Clean DB behavior'
     Remove-Item -LiteralPath $alpha3 -Force
     $clean = Invoke-DuplFinder -CliArgs @('clean-db', '--db', $primaryDb, '--batch-size', '2') -LogName 'clean-db.log'
@@ -485,6 +590,10 @@ try {
     Write-Host "First scan result: $script:FirstScanResult"
     Write-Host "Second scan/cache result: $script:SecondScanResult"
     Write-Host "Duplicate validation result: $script:DuplicateValidationResult"
+    Write-Host "Prestage report validation result: $script:PrestageReportValidationResult"
+    Write-Host "Multi-root validation result: $script:MultiRootValidationResult"
+    Write-Host "Prestage report: $script:PrestageReportPath"
+    Write-Host "Multi-root prestage report: $script:MultiRootPrestageReportPath"
     Write-Host "Clean DB validation result: $script:CleanDbValidationResult"
     Write-Host "Missing DB validation result: $script:MissingDbValidationResult"
     Write-Host 'Final PASS'
@@ -502,6 +611,10 @@ catch {
     Write-Host "First scan result: $script:FirstScanResult"
     Write-Host "Second scan/cache result: $script:SecondScanResult"
     Write-Host "Duplicate validation result: $script:DuplicateValidationResult"
+    Write-Host "Prestage report validation result: $script:PrestageReportValidationResult"
+    Write-Host "Multi-root validation result: $script:MultiRootValidationResult"
+    Write-Host "Prestage report: $script:PrestageReportPath"
+    Write-Host "Multi-root prestage report: $script:MultiRootPrestageReportPath"
     Write-Host "Clean DB validation result: $script:CleanDbValidationResult"
     Write-Host "Missing DB validation result: $script:MissingDbValidationResult"
     $exitCode = 1

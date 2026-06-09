@@ -83,6 +83,18 @@ public static class Program
                     return 0;
                 }
 
+                case "prestage-report":
+                {
+                    var options = ParsePrestageReportOptions(rest);
+                    db.EnsureDatabaseExists(options.DbPath);
+                    var report = new PrestageReportService();
+                    var groups = await report.GenerateAsync(options, cts.Token);
+                    Console.WriteLine($"HTML report written: {Path.GetFullPath(options.OutputPath)}");
+                    Console.WriteLine($"Exact duplicate groups included: {groups}");
+                    Console.WriteLine("This report does not move or delete files. It only exports a stage plan.");
+                    return 0;
+                }
+
                 default:
                     Console.WriteLine($"Nieznana komenda: {args[0]}");
                     PrintHelp();
@@ -132,6 +144,20 @@ public static class Program
             LargeFileThresholdBytes = Math.Max(1, largeFileThresholdBytes),
             FollowReparsePoints = HasFlag(args, "--follow-reparse-points"),
             RecordSkipped = HasFlag(args, "--record-skipped")
+        };
+    }
+
+    private static PrestageReportOptions ParsePrestageReportOptions(string[] args)
+    {
+        var outputPath = GetOption(args, "--out");
+        if (string.IsNullOrWhiteSpace(outputPath))
+            throw new ArgumentException("Opcja --out jest wymagana, np. prestage-report --db duplicates.db --out prestage-report.html.");
+
+        return new PrestageReportOptions
+        {
+            DbPath = GetOption(args, "--db") ?? "duplicates.db",
+            OutputPath = outputPath,
+            Force = HasFlag(args, "--force")
         };
     }
 
@@ -269,6 +295,7 @@ Komendy:
   duplicates [opcje]
   stats [opcje]
   clean-db [opcje]
+  prestage-report [opcje]
 
 Scan:
   scan <path> --db duplicates.db --profile sata-ssd
@@ -298,6 +325,20 @@ Duplicates:
   duplicates --db duplicates.db
   duplicates --db duplicates.db --min-size 1MB
   duplicates --db duplicates.db --min-size 1MB --export duplicates.csv
+
+Prestage report:
+  prestage-report --db duplicates.db --out prestage-report.html
+  prestage-report --db duplicates.db --out prestage-report.html --force
+  prestage-report --db C:\TEST\duplicates.db --out C:\TEST\prestage-report.html
+
+  Generates an interactive local dark themed HTML review report for exact duplicate groups.
+  The report lets you choose keep/stage candidates and export stage-plan.json.
+  It does not move or delete files.
+
+Opcje prestage-report:
+  --db <plik>                      Istniejąca baza po skanowaniu, domyślnie duplicates.db
+  --out <html>                     Ścieżka raportu HTML, wymagana
+  --force                          Nadpisuje istniejący raport HTML
 
 Stats:
   stats --db duplicates.db

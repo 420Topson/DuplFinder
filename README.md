@@ -62,6 +62,12 @@ Then print duplicate groups:
 dotnet run --project .\DuplicateFinder.csproj -- duplicates --db duplicates.db
 ```
 
+Optionally generate a local review report before any future staging workflow:
+
+```powershell
+dotnet run --project .\DuplicateFinder.csproj -- prestage-report --db duplicates.db --out prestage-report.html
+```
+
 ## Commands
 
 ### `scan`
@@ -115,6 +121,28 @@ dotnet run --project .\DuplicateFinder.csproj -- duplicates --db duplicates.db -
 dotnet run --project .\DuplicateFinder.csproj -- duplicates --db duplicates.db --min-size 1MB --export duplicates.csv
 ```
 
+### `prestage-report`
+
+Generates a self-contained dark themed HTML review report for exact duplicate groups.
+
+```powershell
+dotnet run --project .\DuplicateFinder.csproj -- prestage-report --db duplicates.db --out prestage-report.html
+dotnet run --project .\DuplicateFinder.csproj -- prestage-report --db duplicates.db --out prestage-report.html --force
+dotnet run --project .\DuplicateFinder.csproj -- prestage-report --db C:\TEST\duplicates.db --out C:\TEST\prestage-report.html
+```
+
+The report works from `file://`, uses no external CDN or network calls, and lets you choose one `KEEP` file plus optional `STAGE` candidates per exact duplicate group. It exports `stage-plan.json` using schema `duplfinder.stage-plan.v1`.
+
+The command only writes the HTML report to `--out`. The report only downloads/exports a JSON stage plan. Neither the command nor the report moves, deletes, renames, sorts, uploads, or modifies user files.
+
+Options:
+
+```text
+--db <file>   Existing database path, default duplicates.db
+--out <html>  Output HTML report path, required
+--force       Overwrite the output HTML report if it already exists
+```
+
 ### `stats`
 
 Shows database totals and estimated potential saving.
@@ -140,6 +168,7 @@ These read-oriented commands require the database file to already exist:
 - `duplicates`
 - `stats`
 - `clean-db`
+- `prestage-report`
 
 If the database path is wrong, the program exits with a clear error instead of silently creating an empty database.
 

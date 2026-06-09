@@ -28,6 +28,7 @@ New-Item -ItemType Directory -Force -Path $sub | Out-Null
 
 $db = Join-Path $root 'smoke.db'
 $csv = Join-Path $root 'dups.csv'
+$report = Join-Path $root 'prestage-report.html'
 $profileHddDb = Join-Path $root 'profile-hdd.db'
 $profileSataSsdDb = Join-Path $root 'profile-sata-ssd.db'
 $profileNvmeDb = Join-Path $root 'profile-nvme.db'
@@ -98,6 +99,39 @@ if (-not (Test-Path $csv)) {
 $csvText = Get-Content -Raw -Path $csv
 if ($csvText -notmatch 'a\.txt' -or $csvText -notmatch 'b\.txt') {
     throw 'Smoke test failed: CSV does not contain both duplicate files.'
+}
+
+$reportRun = Run-Checked 'prestage-report' {
+    dotnet run --project $ProjectPath -- prestage-report --db $db --out $report
+}
+
+if (-not (Test-Path $report)) {
+    throw 'Smoke test failed: prestage report HTML was not created.'
+}
+
+$reportText = Get-Content -Raw -Path $report
+$knownPath = Join-Path $root 'a.txt'
+$knownPathJson = $knownPath.Replace('\', '\\')
+if ($reportText -notmatch 'duplfinder\.stage-plan\.v1') {
+    throw 'Smoke test failed: prestage report does not contain the stage-plan schema string.'
+}
+if ($reportText -notmatch 'Export stage-plan\.json') {
+    throw 'Smoke test failed: prestage report does not contain the export button text.'
+}
+if ($reportText -notmatch 'Files in duplicate groups') {
+    throw 'Smoke test failed: prestage report does not contain the files-in-duplicate-groups summary label.'
+}
+if ($reportText -notmatch 'Redundant files') {
+    throw 'Smoke test failed: prestage report does not contain the redundant files summary label.'
+}
+if ($reportText -notmatch [regex]::Escape($knownPath) -and $reportText -notmatch [regex]::Escape($knownPathJson)) {
+    throw 'Smoke test failed: prestage report does not contain a known duplicate path.'
+}
+if ($reportText -notmatch 'does not move or delete files') {
+    throw 'Smoke test failed: prestage report does not contain the no move/delete warning.'
+}
+if ($reportText -notmatch '#0f1115' -and $reportText -notmatch '#171a21') {
+    throw 'Smoke test failed: prestage report does not contain expected dark theme colors.'
 }
 
 $scan2 = Run-Checked 'scan #2 cache check' {
