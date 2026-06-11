@@ -6,6 +6,11 @@
     <Nullable>enable</Nullable>
   </PropertyGroup>
   <ItemGroup>
+    <Compile Remove="DuplFinder.Gui\**\*.cs" />
+    <EmbeddedResource Remove="DuplFinder.Gui\**\*" />
+    <None Remove="DuplFinder.Gui\**\*" />
+  </ItemGroup>
+  <ItemGroup>
     <PackageReference Include="Microsoft.Data.Sqlite" Version="8.0.0" />
   </ItemGroup>
 </Project>

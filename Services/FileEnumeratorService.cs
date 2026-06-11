@@ -84,6 +84,14 @@ public sealed class FileEnumeratorService
                                 continue;
                             }
 
+                            if (options.MinSizeBytes > 0 && file.Length < options.MinSizeBytes)
+                            {
+                                progress.Skipped();
+                                if (options.RecordSkipped)
+                                    await results.WriteAsync(FileHashResult.FromSkipped(file.FullName, $"below minimum size ({SizeParser.FormatBytes(options.MinSizeBytes)})"), ct);
+                                continue;
+                            }
+
                             var candidate = new FileCandidate(
                                 file.FullName,
                                 file.Name,

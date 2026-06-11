@@ -6,10 +6,10 @@ public static class PathFilters
 {
     public static readonly HashSet<string> AllowedExtensions = new(StringComparer.OrdinalIgnoreCase)
     {
-        ".pdf", ".txt", ".md", ".rtf", ".doc", ".docx", ".xls", ".xlsx", ".ppt", ".pptx",
+        ".pdf", ".txt", ".md", ".rtf", ".doc", ".docx", ".xls", ".xlsx", ".ppt", ".pptx", ".odt", ".ods", ".csv",
         ".jpg", ".jpeg", ".png", ".webp", ".gif", ".bmp", ".tif", ".tiff", ".heic", ".raw", ".cr2", ".nef", ".arw",
         ".mp4", ".mkv", ".avi", ".mov", ".wmv", ".flv", ".webm", ".mpeg", ".mpg", ".m4v",
-        ".mp3", ".flac", ".wav", ".aac", ".ogg", ".m4a"
+        ".mp3", ".flac", ".wav", ".aac", ".ogg", ".m4a", ".opus", ".wma"
     };
 
     public static readonly HashSet<string> ExcludedExtensions = new(StringComparer.OrdinalIgnoreCase)
@@ -56,6 +56,12 @@ public static class PathFilters
 
         var full = Normalize(directory.FullName);
 
+        if (IsRootWindowsDirectory(full))
+        {
+            reason = "excluded Windows system directory";
+            return true;
+        }
+
         foreach (var prefix in ExcludedFullPathPrefixes)
         {
             var normalizedPrefix = Normalize(prefix);
@@ -90,10 +96,30 @@ public static class PathFilters
         }
 
         var ext = file.Extension;
+        if (string.IsNullOrWhiteSpace(ext))
+        {
+            if (options.IncludeNoExtension)
+                return false;
+
+            reason = "no extension";
+            return true;
+        }
+
         if (ExcludedExtensions.Contains(ext))
         {
             reason = "excluded technical extension";
             return true;
+        }
+
+        if (options.IncludeExtensions.Count > 0)
+        {
+            if (!options.IncludeExtensions.Contains(ext, StringComparer.OrdinalIgnoreCase))
+            {
+                reason = "not in selected extensions";
+                return true;
+            }
+
+            return false;
         }
 
         if (!AllowedExtensions.Contains(ext))
@@ -108,5 +134,17 @@ public static class PathFilters
     private static string Normalize(string path)
     {
         return path.Replace(Path.AltDirectorySeparatorChar, Path.DirectorySeparatorChar).TrimEnd(Path.DirectorySeparatorChar);
+    }
+
+    private static bool IsRootWindowsDirectory(string normalizedPath)
+    {
+        var root = Path.GetPathRoot(normalizedPath);
+        if (string.IsNullOrWhiteSpace(root))
+            return false;
+
+        var normalizedRoot = Normalize(root);
+        var windowsPath = Normalize(Path.Combine(normalizedRoot + Path.DirectorySeparatorChar, "Windows"));
+        return normalizedPath.Equals(windowsPath, StringComparison.OrdinalIgnoreCase) ||
+            normalizedPath.StartsWith(windowsPath + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase);
     }
 }

@@ -40,6 +40,7 @@ public static class Program
                     Console.WriteLine($"Profile: {FormatProfile(options.Profile)}");
                     Console.WriteLine($"Threads: {options.Threads}, batch: {options.BatchSize}, channel: {options.ChannelCapacity}, buffer: {SizeParser.FormatBytes(options.BufferSize)}");
                     Console.WriteLine($"Low resource: {options.LowResource}, large file parallelism: {options.LargeFileParallelism}, large file threshold: {SizeParser.FormatBytes(options.LargeFileThresholdBytes)}");
+                    Console.WriteLine($"Minimum file size: {SizeParser.FormatBytes(options.MinSizeBytes)}");
                     Console.WriteLine("Kasowanie plików jest wyłączone. Program tylko raportuje duplikaty.");
 
                     var scan = new ScanService(db);
@@ -177,6 +178,11 @@ public static class Program
         var bufferSize = TryParseSizeToInt(GetOption(args, "--buffer-size"), defaults.BufferSize);
         var largeFileParallelism = TryParseInt(GetOption(args, "--large-file-parallelism"), defaults.LargeFileParallelism);
         var largeFileThresholdBytes = TryParseSizeToLong(GetOption(args, "--large-file-threshold"), defaults.LargeFileThresholdBytes);
+        var includeExtensions = ParseExtensionList(GetOption(args, "--include-ext"));
+        var minSizeBytes = TryParseSizeToLong(GetOption(args, "--min-size"), 0);
+
+        if (minSizeBytes < 0)
+            throw new ArgumentException("--min-size must be greater than or equal to 0.");
 
         return new ScanOptions
         {
@@ -191,7 +197,10 @@ public static class Program
             LargeFileParallelism = Math.Max(1, largeFileParallelism),
             LargeFileThresholdBytes = Math.Max(1, largeFileThresholdBytes),
             FollowReparsePoints = HasFlag(args, "--follow-reparse-points"),
-            RecordSkipped = HasFlag(args, "--record-skipped")
+            RecordSkipped = HasFlag(args, "--record-skipped"),
+            IncludeExtensions = includeExtensions,
+            IncludeNoExtension = HasFlag(args, "--include-no-extension"),
+            MinSizeBytes = minSizeBytes
         };
     }
 
@@ -311,6 +320,30 @@ public static class Program
         };
     }
 
+    private static IReadOnlyCollection<string> ParseExtensionList(string? value)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+            return Array.Empty<string>();
+
+        var result = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var rawPart in value.Split([',', ';'], StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
+        {
+            var part = rawPart.Trim();
+            if (part.Length == 0)
+                continue;
+
+            if (part.Contains(Path.DirectorySeparatorChar) || part.Contains(Path.AltDirectorySeparatorChar))
+                throw new ArgumentException($"Invalid extension in --include-ext: {part}");
+
+            if (!part.StartsWith(".", StringComparison.Ordinal))
+                part = "." + part;
+
+            result.Add(part);
+        }
+
+        return result.ToArray();
+    }
+
     private static string FormatProfile(ScanProfile profile) => profile switch
     {
         ScanProfile.Hdd => "hdd",
@@ -401,6 +434,8 @@ Scan:
   scan "D:" --db duplicates.db --profile sata-ssd
   scan "D:" --db duplicates.db --profile nvme
   scan "C:\Users\You\Pictures" --db pictures.db --profile nvme --threads 4
+  scan "D:\Photos" --db photos.db --include-ext .jpg,.jpeg,.png --include-no-extension
+  scan "D:\Photos" --db photos.db --include-ext .jpg,.jpeg,.png --min-size 1MB
 
 Opcje scan:
   <path>                           Dowolny dysk lub katalog do skanowania
@@ -418,6 +453,9 @@ Opcje scan:
   --large-file-threshold <512MB>   Od jakiego rozmiaru stosować limit dużych plików
   --follow-reparse-points          Domyślnie wyłączone
   --record-skipped                 Zapisuje pominięte wpisy do DB, może zwiększyć bazę
+  --include-ext .jpg,.png,.mp4     Skanuje tylko wybrane rozszerzenia z bezpiecznej listy użytkownika
+  --include-no-extension           Dołącza pliki bez rozszerzenia; domyślnie są pomijane
+  --min-size <1KB|10MB|...>        Pomija mniejsze pliki przed hashowaniem; 0B lub brak flagi wyłącza filtr
   Safety: scan only records metadata/hashes. It does not move or delete files.
 
 Duplicates:
