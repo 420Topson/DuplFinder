@@ -82,6 +82,33 @@
                             <ScrollViewer Height="260" VerticalScrollBarVisibility="Auto">
                                 <StackPanel x:Name="FileTypeGroupsPanel" />
                             </ScrollViewer>
+
+                            <TextBlock x:Name="MinSizeLabel" Margin="0,12,0,4" FontWeight="SemiBold" />
+                            <Slider x:Name="MinSizeSlider" Minimum="0" Maximum="8" TickFrequency="1" IsSnapToTickEnabled="True" ValueChanged="OnControlsChanged" />
+                            <Grid Margin="0,4,0,2">
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="*" />
+                                    <ColumnDefinition Width="*" />
+                                    <ColumnDefinition Width="*" />
+                                    <ColumnDefinition Width="*" />
+                                    <ColumnDefinition Width="*" />
+                                    <ColumnDefinition Width="*" />
+                                    <ColumnDefinition Width="*" />
+                                    <ColumnDefinition Width="*" />
+                                    <ColumnDefinition Width="*" />
+                                </Grid.ColumnDefinitions>
+                                <TextBlock Grid.Column="0" Text="0 B" FontSize="11" TextAlignment="Left" />
+                                <TextBlock Grid.Column="1" Text="1 KB" FontSize="11" TextAlignment="Center" />
+                                <TextBlock Grid.Column="2" Text="10 KB" FontSize="11" TextAlignment="Center" />
+                                <TextBlock Grid.Column="3" Text="100 KB" FontSize="11" TextAlignment="Center" />
+                                <TextBlock Grid.Column="4" Text="1 MB" FontSize="11" TextAlignment="Center" />
+                                <TextBlock Grid.Column="5" Text="10 MB" FontSize="11" TextAlignment="Center" />
+                                <TextBlock Grid.Column="6" Text="100 MB" FontSize="11" TextAlignment="Center" />
+                                <TextBlock Grid.Column="7" Text="1 GB" FontSize="11" TextAlignment="Center" />
+                                <TextBlock Grid.Column="8" Text="10 GB" FontSize="11" TextAlignment="Right" />
+                            </Grid>
+                            <TextBlock Text="0 B = no --min-size filter; scan all selected file extensions."
+                                       Foreground="#374151" TextWrapping="Wrap" Margin="0,0,0,0" />
                         </StackPanel>
                     </Grid>
                 </ScrollViewer>
@@ -92,43 +119,17 @@
                     <TextBlock Text="Find exact duplicate groups in an existing database." FontWeight="Bold" />
                     <TextBlock Text="Duplicates are read from the selected DuplFinder database. CSV export is optional and is not required for viewing duplicates."
                                TextWrapping="Wrap" Foreground="#374151" Margin="0,8,0,4" />
-                    <TextBlock Text="Smaller files can create many duplicate groups. Increase this value to focus on larger files." TextWrapping="Wrap" Margin="0,4,0,8" />
-                    <TextBlock x:Name="MinSizeLabel" Margin="0,0,0,4" FontWeight="SemiBold" />
-                    <Slider x:Name="MinSizeSlider" Minimum="0" Maximum="8" TickFrequency="1" IsSnapToTickEnabled="True" ValueChanged="OnControlsChanged" />
-                    <Grid Margin="0,4,0,2">
-                        <Grid.ColumnDefinitions>
-                            <ColumnDefinition Width="*" />
-                            <ColumnDefinition Width="*" />
-                            <ColumnDefinition Width="*" />
-                            <ColumnDefinition Width="*" />
-                            <ColumnDefinition Width="*" />
-                            <ColumnDefinition Width="*" />
-                            <ColumnDefinition Width="*" />
-                            <ColumnDefinition Width="*" />
-                            <ColumnDefinition Width="*" />
-                        </Grid.ColumnDefinitions>
-                        <TextBlock Grid.Column="0" Text="0 B" FontSize="11" TextAlignment="Left" />
-                        <TextBlock Grid.Column="1" Text="1 KB" FontSize="11" TextAlignment="Center" />
-                        <TextBlock Grid.Column="2" Text="10 KB" FontSize="11" TextAlignment="Center" />
-                        <TextBlock Grid.Column="3" Text="100 KB" FontSize="11" TextAlignment="Center" />
-                        <TextBlock Grid.Column="4" Text="1 MB" FontSize="11" TextAlignment="Center" />
-                        <TextBlock Grid.Column="5" Text="10 MB" FontSize="11" TextAlignment="Center" />
-                        <TextBlock Grid.Column="6" Text="100 MB" FontSize="11" TextAlignment="Center" />
-                        <TextBlock Grid.Column="7" Text="1 GB" FontSize="11" TextAlignment="Center" />
-                        <TextBlock Grid.Column="8" Text="10 GB" FontSize="11" TextAlignment="Right" />
-                    </Grid>
-                    <TextBlock Text="0 B = no --min-size filter; scan all selected file extensions."
-                               Foreground="#374151" TextWrapping="Wrap" Margin="0,0,0,12" />
-                    <CheckBox x:Name="ExportCsvCheckBox" Content="Export CSV (optional)" Checked="OnControlsChanged" Unchecked="OnControlsChanged" />
+                    <TextBlock Text="Optional export" FontWeight="SemiBold" Margin="0,12,0,4" />
+                    <CheckBox x:Name="ExportCsvCheckBox" Content="Export results to CSV" Checked="OnControlsChanged" Unchecked="OnControlsChanged" />
                     <Grid Margin="0,6,0,0">
                         <Grid.ColumnDefinitions>
                             <ColumnDefinition Width="Auto" />
                             <ColumnDefinition Width="*" />
                             <ColumnDefinition Width="Auto" />
                         </Grid.ColumnDefinitions>
-                        <TextBlock Text="CSV export:" VerticalAlignment="Center" Margin="0,0,8,0" />
-                        <TextBox x:Name="CsvPathTextBox" Grid.Column="1" TextChanged="OnControlsChanged" />
-                        <Button Grid.Column="2" Content="Browse..." Click="OnBrowseCsv" Margin="8,0,0,0" />
+                        <TextBlock x:Name="CsvExportLabel" Text="CSV export:" VerticalAlignment="Center" Margin="0,0,8,0" IsEnabled="False" />
+                        <TextBox x:Name="CsvPathTextBox" Grid.Column="1" TextChanged="OnControlsChanged" IsEnabled="False" />
+                        <Button x:Name="CsvBrowseButton" Grid.Column="2" Content="Browse..." Click="OnBrowseCsv" Margin="8,0,0,0" IsEnabled="False" />
                     </Grid>
                 </StackPanel>
             </TabItem>

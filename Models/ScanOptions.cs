@@ -17,4 +17,5 @@ public sealed class ScanOptions
     public bool RecordSkipped { get; init; }
     public IReadOnlyCollection<string> IncludeExtensions { get; init; } = Array.Empty<string>();
     public bool IncludeNoExtension { get; init; }
+    public long MinSizeBytes { get; init; }
 }

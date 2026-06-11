@@ -339,6 +339,7 @@ public partial class MainWindow : Window
             return NotReady("Not ready: select at least one file type to scan");
 
         var profile = GetSelectedProfile();
+        var minSize = GetMinSizeArg();
         var invocations = new List<CommandInvocation>();
         foreach (var target in _scanTargets)
         {
@@ -347,6 +348,8 @@ public partial class MainWindow : Window
                 args.AddRange(["--include-ext", string.Join(",", selectedExtensions)]);
             if (includeNoExtension)
                 args.Add("--include-no-extension");
+            if (!string.IsNullOrWhiteSpace(minSize))
+                args.AddRange(["--min-size", minSize]);
             if (RecordSkippedCheckBox.IsChecked == true)
                 args.Add("--record-skipped");
             if (FollowReparseCheckBox.IsChecked == true)
@@ -380,9 +383,6 @@ public partial class MainWindow : Window
             return NotReady("Not ready: run scan first or select an existing DuplFinder database.");
 
         var args = new List<string> { "duplicates", "--db", dbPath };
-        var minSize = GetMinSizeArg();
-        if (!string.IsNullOrWhiteSpace(minSize))
-            args.AddRange(["--min-size", minSize]);
         if (ExportCsvCheckBox.IsChecked == true && !string.IsNullOrWhiteSpace(CsvPathTextBox.Text))
             args.AddRange(["--export", CsvPathTextBox.Text.Trim()]);
         return Ready(cliPath, args);
@@ -496,7 +496,7 @@ public partial class MainWindow : Window
     private string GetMinSizeArg()
     {
         var index = Math.Clamp((int)Math.Round(MinSizeSlider.Value), 0, MinSizeArgs.Length - 1);
-        MinSizeLabel.Text = $"Minimum duplicate file size: {MinSizeLabels[index]}";
+        MinSizeLabel.Text = $"Minimum file size to scan: {MinSizeLabels[index]}";
         return MinSizeArgs[index];
     }
 
@@ -508,11 +508,16 @@ public partial class MainWindow : Window
         var selectedExtensions = GetSelectedExtensions();
         var includeNoExtension = _extensionlessBox?.IsChecked == true;
         FileTypeCountTextBlock.Text = $"{selectedExtensions.Count} extensions enabled" + (includeNoExtension ? " + files with no extension" : "");
+        GetMinSizeArg();
         var plan = BuildCurrentCommandPlan();
         CommandPreviewTextBox.Text = plan.Preview;
         ReadyTextBlock.Text = plan.IsReady ? "Ready" : plan.NotReadyReason;
         RunCommandButton.IsEnabled = plan.IsReady && !_isRunning;
         OpenReportButton.IsEnabled = ExistingFile(ReportPathTextBox.Text.Trim());
+        var csvExportEnabled = ExportCsvCheckBox.IsChecked == true;
+        CsvExportLabel.IsEnabled = csvExportEnabled;
+        CsvPathTextBox.IsEnabled = csvExportEnabled;
+        CsvBrowseButton.IsEnabled = csvExportEnabled;
         CancelButton.IsEnabled = _isRunning;
     }
 
