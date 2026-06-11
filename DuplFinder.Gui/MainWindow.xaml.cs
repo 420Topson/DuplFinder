@@ -317,14 +317,73 @@ public partial class MainWindow : Window
             0 => BuildScanPlan(cliPath),
             1 => BuildDuplicatesPlan(cliPath),
             2 => BuildPrestagePlan(cliPath),
-            3 => BuildApplyPlan(cliPath),
-            4 => BuildUndoPlan(cliPath),
-            5 => BuildPurgePlan(cliPath),
-            6 => BuildStatsCleanPlan(cliPath),
-            _ => NotReady("Not ready: select a command tab")
+            3 => BuildDuplStorageSelectedPlan(cliPath),
+            4 => BuildStatsCleanPlan(cliPath),
+            _ => NotReady("Not ready: select a workflow tab")
         };
     }
 
+    private CommandPlan BuildDuplStorageSelectedPlan(string cliPath)
+    {
+        if (StorageRestoreModeRadio.IsChecked == true)
+            return BuildUndoPlan(cliPath);
+        if (StorageCleanupModeRadio.IsChecked == true)
+            return BuildPurgePlan(cliPath);
+        return BuildApplyPlan(cliPath);
+    }
+
+    private string BuildWorkflowPreview(string cliPath)
+    {
+        if (string.IsNullOrWhiteSpace(cliPath))
+        {
+            return "[Scan]\nNot ready: select CLI executable path\n\n" +
+                "[Duplicates]\nNot ready: select CLI executable path\n\n" +
+                "[Prestage Report]\nNot ready: select CLI executable path\n\n" +
+                "[Dupl Storage]\nMove to Dupl Storage:\n  Not ready: select CLI executable path\n\n" +
+                "Restore from Dupl Storage:\n  Not ready: select CLI executable path\n\n" +
+                "Cleanup:\n  Not ready: select CLI executable path\n\n" +
+                "[Stats / Clean DB]\nNot ready: select CLI executable path";
+        }
+
+        var preview = new StringBuilder();
+        AppendWorkflowSection(preview, "Scan", BuildScanPlan(cliPath), MainTabs.SelectedIndex == 0);
+        AppendWorkflowSection(preview, "Duplicates", BuildDuplicatesPlan(cliPath), MainTabs.SelectedIndex == 1);
+        AppendWorkflowSection(preview, "Prestage Report", BuildPrestagePlan(cliPath), MainTabs.SelectedIndex == 2);
+        AppendDuplStorageSection(preview, cliPath);
+        AppendWorkflowSection(preview, "Stats / Clean DB", BuildStatsCleanPlan(cliPath), MainTabs.SelectedIndex == 4);
+        return preview.ToString().TrimEnd();
+    }
+
+    private void AppendWorkflowSection(StringBuilder preview, string title, CommandPlan plan, bool active)
+    {
+        if (preview.Length > 0)
+            preview.AppendLine().AppendLine();
+
+        preview.AppendLine($"{(active ? ">> " : "")}[{title}]");
+        preview.Append(PlanText(plan));
+    }
+
+    private void AppendDuplStorageSection(StringBuilder preview, string cliPath)
+    {
+        if (preview.Length > 0)
+            preview.AppendLine().AppendLine();
+
+        preview.AppendLine($"{(MainTabs.SelectedIndex == 3 ? ">> " : "")}[Dupl Storage]");
+        AppendWorkflowSubPlan(preview, "Move to Dupl Storage", BuildApplyPlan(cliPath), StorageMoveModeRadio.IsChecked == true);
+        preview.AppendLine().AppendLine();
+        AppendWorkflowSubPlan(preview, "Restore from Dupl Storage", BuildUndoPlan(cliPath), StorageRestoreModeRadio.IsChecked == true);
+        preview.AppendLine().AppendLine();
+        AppendWorkflowSubPlan(preview, "Cleanup", BuildPurgePlan(cliPath), StorageCleanupModeRadio.IsChecked == true);
+    }
+
+    private static void AppendWorkflowSubPlan(StringBuilder preview, string title, CommandPlan plan, bool active)
+    {
+        preview.AppendLine($"{(active ? ">> " : "")}{title}:");
+        foreach (var line in PlanText(plan).Split([Environment.NewLine], StringSplitOptions.None))
+            preview.Append("  ").AppendLine(line);
+    }
+
+    private static string PlanText(CommandPlan plan) => plan.IsReady ? plan.Preview : plan.NotReadyReason;
     private CommandPlan BuildScanPlan(string cliPath)
     {
         var dbPath = DbPathTextBox.Text.Trim();
@@ -407,7 +466,7 @@ public partial class MainWindow : Window
     {
         var planPath = StagePlanPathTextBox.Text.Trim();
         if (!ExistingFile(planPath))
-            return NotReady("Not ready: select an existing stage-plan.json");
+            return NotReady("Not ready: missing stage-plan.json");
 
         if (ApplyQuarantineRadio.IsChecked == true)
         {
@@ -426,11 +485,11 @@ public partial class MainWindow : Window
     {
         var manifestPath = ManifestPathTextBox.Text.Trim();
         if (!ExistingFile(manifestPath))
-            return NotReady("Not ready: select an existing Dupl Storage manifest");
+            return NotReady("Not ready: missing manifest");
 
         if (UndoRestoreRadio.IsChecked == true)
             return Ready(cliPath, ["undo-quarantine", "--manifest", manifestPath, "--restore"], true,
-                "Restore mode moves Dupl Storage files back using the manifest and never overwrites existing originals.\n\nContinue?");
+                "Restore moves files back from Dupl Storage using the manifest and never overwrites existing originals.\n\nContinue?");
 
         return Ready(cliPath, ["undo-quarantine", "--manifest", manifestPath, "--dry-run"]);
     }
@@ -439,11 +498,11 @@ public partial class MainWindow : Window
     {
         var manifestPath = ManifestPathTextBox.Text.Trim();
         if (!ExistingFile(manifestPath))
-            return NotReady("Not ready: select an existing Dupl Storage manifest");
+            return NotReady("Not ready: missing manifest");
 
         if (PurgeConfirmRadio.IsChecked == true)
             return Ready(cliPath, ["purge-quarantine", "--manifest", manifestPath, "--confirm-purge"], true,
-                "This permanently deletes validated files already inside the Dupl Storage session.\nIt does not delete original duplicate paths or KEEP paths.\n\nContinue?");
+                "This permanently deletes files already inside the selected Dupl Storage session and listed in the manifest.\n\nIt does not delete original duplicate paths or KEEP paths.\n\nContinue?");
 
         return Ready(cliPath, ["purge-quarantine", "--manifest", manifestPath, "--dry-run"]);
     }
@@ -495,8 +554,7 @@ public partial class MainWindow : Window
 
     private string GetMinSizeArg()
     {
-        var index = Math.Clamp((int)Math.Round(MinSizeSlider.Value), 0, MinSizeArgs.Length - 1);
-        MinSizeLabel.Text = $"Minimum file size to scan: {MinSizeLabels[index]}";
+        var index = Math.Clamp(MinSizeComboBox.SelectedIndex, 0, MinSizeArgs.Length - 1);
         return MinSizeArgs[index];
     }
 
@@ -508,17 +566,51 @@ public partial class MainWindow : Window
         var selectedExtensions = GetSelectedExtensions();
         var includeNoExtension = _extensionlessBox?.IsChecked == true;
         FileTypeCountTextBlock.Text = $"{selectedExtensions.Count} extensions enabled" + (includeNoExtension ? " + files with no extension" : "");
-        GetMinSizeArg();
-        var plan = BuildCurrentCommandPlan();
-        CommandPreviewTextBox.Text = plan.Preview;
-        ReadyTextBlock.Text = plan.IsReady ? "Ready" : plan.NotReadyReason;
-        RunCommandButton.IsEnabled = plan.IsReady && !_isRunning;
+
+        var currentPlan = BuildCurrentCommandPlan();
+        CommandPreviewTextBox.Text = BuildWorkflowPreview(CliPathTextBox.Text.Trim());
+        ReadyTextBlock.Text = currentPlan.IsReady ? $"Ready: {GetCurrentWorkflowName()}" : currentPlan.NotReadyReason;
+        RunCommandButton.IsEnabled = currentPlan.IsReady && !_isRunning;
+        RunCommandButton.Content = GetRunButtonText();
         OpenReportButton.IsEnabled = ExistingFile(ReportPathTextBox.Text.Trim());
         var csvExportEnabled = ExportCsvCheckBox.IsChecked == true;
         CsvExportLabel.IsEnabled = csvExportEnabled;
         CsvPathTextBox.IsEnabled = csvExportEnabled;
         CsvBrowseButton.IsEnabled = csvExportEnabled;
         CancelButton.IsEnabled = _isRunning;
+    }
+
+    private string GetCurrentWorkflowName() => MainTabs.SelectedIndex switch
+    {
+        0 => "Scan",
+        1 => "Duplicates",
+        2 => "Prestage Report",
+        3 => StorageRestoreModeRadio.IsChecked == true
+            ? "Restore from Dupl Storage"
+            : StorageCleanupModeRadio.IsChecked == true
+                ? "Dupl Storage cleanup"
+                : "Move to Dupl Storage",
+        4 => CleanDbRadio.IsChecked == true ? "Clean DB" : "Stats",
+        _ => "Workflow"
+    };
+
+    private string GetRunButtonText() => MainTabs.SelectedIndex switch
+    {
+        0 => "Run Scan",
+        1 => "Find duplicates from DB",
+        2 => "Generate report",
+        3 => GetDuplStorageRunButtonText(),
+        4 => CleanDbRadio.IsChecked == true ? "Clean DB" : "Run Stats",
+        _ => "Run"
+    };
+
+    private string GetDuplStorageRunButtonText()
+    {
+        if (StorageRestoreModeRadio.IsChecked == true)
+            return UndoRestoreRadio.IsChecked == true ? "Restore from Dupl Storage" : "Preview restore";
+        if (StorageCleanupModeRadio.IsChecked == true)
+            return PurgeConfirmRadio.IsChecked == true ? "Permanently purge Dupl Storage files" : "Run Dupl Storage dry-run";
+        return ApplyQuarantineRadio.IsChecked == true ? "Move to Dupl Storage" : "Preview move plan";
     }
 
     private async void OnRunCommand(object sender, RoutedEventArgs e)
