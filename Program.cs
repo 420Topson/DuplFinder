@@ -8,7 +8,9 @@ public static class Program
 {
     public static async Task<int> Main(string[] args)
     {
-        Console.OutputEncoding = System.Text.Encoding.UTF8;
+        var utf8 = new System.Text.UTF8Encoding(encoderShouldEmitUTF8Identifier: false);
+        Console.OutputEncoding = utf8;
+        Console.SetError(new StreamWriter(Console.OpenStandardError(), utf8) { AutoFlush = true });
 
         if (args.Length == 0 || args[0] is "-h" or "--help" or "help")
         {
