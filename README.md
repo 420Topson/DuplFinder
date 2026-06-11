@@ -1,14 +1,27 @@
 # DuplFinder
 
-DuplFinder is a Windows-focused .NET 8 tool for finding exact duplicate files.
+DuplFinder is a Windows-focused C# / .NET 8 CLI tool for finding exact duplicate files.
 
-It scans a selected drive or folder, stores file metadata and SHA-256 hashes in SQLite, and reports files that have the same size and the same full hash.
+It scans selected drives or folders, stores file metadata and SHA-256 hashes in SQLite, and reports files that have the same size and the same full hash.
+
+For the MVP, duplicate detection is exact only:
+
+1. same file size
+2. same full SHA-256 hash
+
+File name, folder path, extension, creation date, and modified date are not used to decide whether two files are duplicates.
+
+## Implementation Note
+
+DuplFinder is primarily a C# / .NET CLI application.
+
+PowerShell is used mainly for smoke/integration tests, validation scripts, and release workflow helpers. The duplicate scanning, hashing, SQLite database handling, report generation, quarantine flow, undo, and purge logic are implemented in the .NET application.
 
 The CLI remains the core engine. The optional v1.1.0 GUI MVP is a WPF wrapper that builds and runs the same CLI commands with safer workflow gating and a visible command preview.
 
 ## Safety
 
-DuplFinder starts as a report-only exact duplicate finder. The normal review flow is explicit and staged:
+DuplFinder uses an explicit staged cleanup workflow:
 
 ```text
 scan
@@ -27,38 +40,58 @@ scan
 
 `undo-quarantine` can restore quarantined files using the quarantine manifest.
 
-`purge-quarantine` only deletes files already inside the quarantine session and listed in the manifest. It never deletes `original_path`, `keep_path`, or any original duplicate file location.
+`purge-quarantine` is the only permanent delete operation. It deletes only files already inside a DuplFinder quarantine session and listed in the manifest. It never deletes `original_path`, `keep_path`, or any original duplicate file location.
 
-Plan and manifest files are treated as untrusted input. Destructive actions validate schema, paths, quarantine containment, size, and SHA-256 before acting. Users should inspect dry-run output before quarantine or purge.
+Plan and manifest files are treated as untrusted input. Destructive actions validate schema, paths, quarantine containment, size, and SHA-256 before acting.
 
-For the MVP, duplicate detection is exact only:
-
-1. same file size
-2. same SHA-256 hash
-
-File name, folder, and extension are not used to decide whether two files are duplicates.
+Users should always inspect dry-run output before quarantine or purge.
 
 ## What This Is Not
 
 DuplFinder is not:
 
-- a file sorter
-- an automatic cleanup or delete tool
-- an antivirus or malware scanner
-- a forensic scanner
-- a perceptual image/audio/video similarity tool
-- a fuzzy matching or "DNA" fingerprint tool
-- a cloud scanner
-- a replacement for the CLI engine
+* a file sorter
+* an automatic cleanup or delete tool
+* a direct delete-duplicates tool
+* an antivirus or malware scanner
+* a forensic scanner
+* a perceptual image/audio/video similarity tool
+* a fuzzy matching or "DNA" fingerprint tool
+* a cloud scanner
+* a replacement for the CLI engine
 
 ## Requirements
 
-- Windows
-- .NET 8 SDK for building from source
+For running the published release:
+
+* Windows x64
+
+For building from source:
+
+* Windows
+* .NET 8 SDK
 
 The code targets Windows usage, but most of the implementation is plain .NET and remains reasonably portable where practical.
 
-## Build
+## Download
+
+For normal use, download the latest release asset from GitHub Releases.
+
+Recommended asset:
+
+```text
+DuplFinder-win-x64-v1.0.0.zip
+```
+
+Standalone executable:
+
+```text
+DuplicateFinder.exe
+```
+
+The published `DuplicateFinder.exe` is a self-contained win-x64 single-file executable.
+
+## Build From Source
 
 ```powershell
 dotnet restore
@@ -74,7 +107,13 @@ The GUI project is:
 
 It targets `net8.0-windows` and uses WPF.
 
-## Run
+Optional local publish:
+
+```powershell
+dotnet publish .\DuplicateFinder.csproj -c Release -r win-x64 --self-contained true /p:PublishSingleFile=true /p:EnableCompressionInSingleFile=true /p:IncludeNativeLibrariesForSelfExtract=true -o .\publish\win-x64
+```
+
+## Quick Start
 
 Use `scan` first to create and populate a SQLite database:
 
@@ -97,22 +136,29 @@ dotnet run --project .\DuplicateFinder.csproj -- scan "C:\Users\You\Pictures" --
 dotnet run --project .\DuplicateFinder.csproj -- scan ".\SomeFolder" --db local.db
 ```
 
-Then print duplicate groups:
+Then print exact duplicate groups:
 
 ```powershell
 dotnet run --project .\DuplicateFinder.csproj -- duplicates --db duplicates.db
 ```
 
-Optionally generate a local review report before any future staging workflow:
+Generate a local review report:
 
 ```powershell
 dotnet run --project .\DuplicateFinder.csproj -- prestage-report --db duplicates.db --out prestage-report.html
 ```
 
-After exporting `stage-plan.json` from the report, inspect the dry-run before moving anything:
+Open the HTML report locally, choose `KEEP` and `STAGE` files, then export `stage-plan.json`.
+
+Inspect the dry-run before moving anything:
 
 ```powershell
 dotnet run --project .\DuplicateFinder.csproj -- apply-stage-plan --plan stage-plan.json --dry-run
+```
+
+Move selected stage files into quarantine:
+
+```powershell
 dotnet run --project .\DuplicateFinder.csproj -- apply-stage-plan --plan stage-plan.json --quarantine "D:\DuplFinder-Quarantine"
 ```
 
@@ -221,12 +267,12 @@ Default mode is dry-run/report only. Quarantine mode creates a unique `session-*
 
 Before moving any file, DuplFinder verifies:
 
-- stage-plan schema is `duplfinder.stage-plan.v1`
-- paths are fully-qualified local paths
-- selected `stage_paths` are not the `keep_path`
-- `KEEP` exists and still matches the group size + SHA-256
-- each staged file still matches the group size + SHA-256
-- reparse points, symlinks, and junctions are not followed
+* stage-plan schema is `duplfinder.stage-plan.v1`
+* paths are fully-qualified local paths
+* selected `stage_paths` are not the `keep_path`
+* `KEEP` exists and still matches the group size + SHA-256
+* each staged file still matches the group size + SHA-256
+* reparse points, symlinks, and junctions are not followed
 
 `KEEP` files are never moved or modified.
 
@@ -245,7 +291,7 @@ Undo validates manifest schema, quarantine root/session containment, size, and S
 
 ### `purge-quarantine`
 
-Purges quarantined files after review.
+Permanently deletes quarantined files after review.
 
 ```powershell
 dotnet run --project .\DuplicateFinder.csproj -- purge-quarantine --manifest "D:\DuplFinder-Quarantine\session-...\duplfinder-quarantine-manifest.json" --dry-run
@@ -258,11 +304,11 @@ Purge validates manifest schema, quarantine root/session containment, local-only
 
 Purge never deletes:
 
-- `original_path`
-- `keep_path`
-- original duplicate locations
-- files not listed in the manifest
-- folders or directories
+* `original_path`
+* `keep_path`
+* original duplicate locations
+* files not listed in the manifest
+* folders or directories
 
 ### `stats`
 
@@ -284,12 +330,12 @@ dotnet run --project .\DuplicateFinder.csproj -- clean-db --db duplicates.db
 
 Only `scan` creates a database.
 
-These read-oriented commands require the database file to already exist:
+These database commands require the database file to already exist:
 
-- `duplicates`
-- `stats`
-- `clean-db`
-- `prestage-report`
+* `duplicates`
+* `stats`
+* `clean-db`
+* `prestage-report`
 
 If the database path is wrong, the program exits with a clear error instead of silently creating an empty database.
 
@@ -349,7 +395,7 @@ The GUI never changes duplicate identity, never implements fuzzy matching, and n
 
 ## Validation
 
-Run the same checks used by the project workflow:
+Run the core project checks:
 
 ```powershell
 dotnet restore
@@ -359,4 +405,16 @@ dotnet build .\DuplFinder.Gui\DuplFinder.Gui.csproj -c Release
 .\scripts\full-smoke-test.ps1 -ProjectPath .\DuplicateFinder.csproj -Configuration Release
 ```
 
-GitHub Actions also builds, runs the smoke test, publishes a self-contained `win-x64` single-file executable, and uploads it as an artifact.
+The full smoke test is the main integration validation path. It covers scan, cache behavior, duplicate grouping, prestage report generation, stage-plan validation, quarantine, undo, purge, hostile input handling, and safety boundaries.
+
+The smaller smoke test is kept as a quick legacy validation helper:
+
+```powershell
+.\scripts\smoke-test.ps1 -ProjectPath .\DuplicateFinder.csproj
+```
+
+GitHub Actions builds the project, runs validation, publishes a self-contained `win-x64` single-file executable, and uploads it as an artifact.
+
+## License
+
+MIT License.
