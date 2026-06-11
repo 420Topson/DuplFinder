@@ -90,17 +90,43 @@
             <TabItem Header="Duplicates">
                 <StackPanel Margin="10">
                     <TextBlock Text="Find exact duplicate groups in an existing database." FontWeight="Bold" />
-                    <TextBlock Text="Smaller files can create many duplicate groups. Increase this value to focus on larger files." TextWrapping="Wrap" Margin="0,8,0,8" />
+                    <TextBlock Text="Duplicates are read from the selected DuplFinder database. CSV export is optional and is not required for viewing duplicates."
+                               TextWrapping="Wrap" Foreground="#374151" Margin="0,8,0,4" />
+                    <TextBlock Text="Smaller files can create many duplicate groups. Increase this value to focus on larger files." TextWrapping="Wrap" Margin="0,4,0,8" />
+                    <TextBlock x:Name="MinSizeLabel" Margin="0,0,0,4" FontWeight="SemiBold" />
                     <Slider x:Name="MinSizeSlider" Minimum="0" Maximum="8" TickFrequency="1" IsSnapToTickEnabled="True" ValueChanged="OnControlsChanged" />
-                    <TextBlock x:Name="MinSizeLabel" Margin="0,4,0,12" />
-                    <CheckBox x:Name="ExportCsvCheckBox" Content="Export CSV" Checked="OnControlsChanged" Unchecked="OnControlsChanged" />
+                    <Grid Margin="0,4,0,2">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="*" />
+                            <ColumnDefinition Width="*" />
+                            <ColumnDefinition Width="*" />
+                            <ColumnDefinition Width="*" />
+                            <ColumnDefinition Width="*" />
+                            <ColumnDefinition Width="*" />
+                            <ColumnDefinition Width="*" />
+                            <ColumnDefinition Width="*" />
+                            <ColumnDefinition Width="*" />
+                        </Grid.ColumnDefinitions>
+                        <TextBlock Grid.Column="0" Text="0 B" FontSize="11" TextAlignment="Left" />
+                        <TextBlock Grid.Column="1" Text="1 KB" FontSize="11" TextAlignment="Center" />
+                        <TextBlock Grid.Column="2" Text="10 KB" FontSize="11" TextAlignment="Center" />
+                        <TextBlock Grid.Column="3" Text="100 KB" FontSize="11" TextAlignment="Center" />
+                        <TextBlock Grid.Column="4" Text="1 MB" FontSize="11" TextAlignment="Center" />
+                        <TextBlock Grid.Column="5" Text="10 MB" FontSize="11" TextAlignment="Center" />
+                        <TextBlock Grid.Column="6" Text="100 MB" FontSize="11" TextAlignment="Center" />
+                        <TextBlock Grid.Column="7" Text="1 GB" FontSize="11" TextAlignment="Center" />
+                        <TextBlock Grid.Column="8" Text="10 GB" FontSize="11" TextAlignment="Right" />
+                    </Grid>
+                    <TextBlock Text="0 B = no --min-size filter; scan all selected file extensions."
+                               Foreground="#374151" TextWrapping="Wrap" Margin="0,0,0,12" />
+                    <CheckBox x:Name="ExportCsvCheckBox" Content="Export CSV (optional)" Checked="OnControlsChanged" Unchecked="OnControlsChanged" />
                     <Grid Margin="0,6,0,0">
                         <Grid.ColumnDefinitions>
                             <ColumnDefinition Width="Auto" />
                             <ColumnDefinition Width="*" />
                             <ColumnDefinition Width="Auto" />
                         </Grid.ColumnDefinitions>
-                        <TextBlock Text="CSV:" VerticalAlignment="Center" Margin="0,0,8,0" />
+                        <TextBlock Text="CSV export:" VerticalAlignment="Center" Margin="0,0,8,0" />
                         <TextBox x:Name="CsvPathTextBox" Grid.Column="1" TextChanged="OnControlsChanged" />
                         <Button Grid.Column="2" Content="Browse..." Click="OnBrowseCsv" Margin="8,0,0,0" />
                     </Grid>
@@ -126,9 +152,11 @@
                 </StackPanel>
             </TabItem>
 
-            <TabItem Header="Apply Stage Plan">
+            <TabItem Header="Dupl Storage">
                 <StackPanel Margin="10">
-                    <TextBlock Text="Apply a browser-exported stage-plan.json. Dry-run is the default." FontWeight="Bold" />
+                    <TextBlock Text="Dupl Storage is the safe local storage area used by DuplFinder for staged duplicate files. Files moved there can be restored using the generated manifest."
+                               FontWeight="Bold" TextWrapping="Wrap" />
+                    <TextBlock Text="Apply a browser-exported stage-plan.json. Dry-run is the default." TextWrapping="Wrap" Foreground="#374151" Margin="0,8,0,0" />
                     <Grid Margin="0,12,0,0">
                         <Grid.ColumnDefinitions>
                             <ColumnDefinition Width="Auto" />
@@ -141,7 +169,7 @@
                     </Grid>
                     <StackPanel Orientation="Horizontal" Margin="0,12,0,0">
                         <RadioButton x:Name="ApplyDryRunRadio" Content="Dry-run" IsChecked="True" Checked="OnControlsChanged" />
-                        <RadioButton x:Name="ApplyQuarantineRadio" Content="Quarantine" Margin="18,0,0,0" Checked="OnControlsChanged" />
+                        <RadioButton x:Name="ApplyQuarantineRadio" Content="Move to Dupl Storage" Margin="18,0,0,0" Checked="OnControlsChanged" />
                     </StackPanel>
                     <Grid Margin="0,10,0,0">
                         <Grid.ColumnDefinitions>
@@ -149,18 +177,18 @@
                             <ColumnDefinition Width="*" />
                             <ColumnDefinition Width="Auto" />
                         </Grid.ColumnDefinitions>
-                        <TextBlock Text="Quarantine folder:" VerticalAlignment="Center" Margin="0,0,8,0" />
+                        <TextBlock Text="Dupl Storage folder:" VerticalAlignment="Center" Margin="0,0,8,0" />
                         <TextBox x:Name="QuarantineFolderTextBox" Grid.Column="1" TextChanged="OnControlsChanged" />
                         <Button Grid.Column="2" Content="Browse..." Click="OnBrowseQuarantineFolder" Margin="8,0,0,0" />
                     </Grid>
-                    <TextBlock Text="Quarantine moves selected STAGE files into a DuplFinder session. KEEP files are never moved or modified."
+                    <TextBlock Text="Dupl Storage moves selected STAGE files into a DuplFinder storage session. KEEP files are never moved or modified."
                                TextWrapping="Wrap" Foreground="#374151" Margin="0,12,0,0" />
                 </StackPanel>
             </TabItem>
 
-            <TabItem Header="Undo Quarantine">
+            <TabItem Header="Restore from Dupl Storage">
                 <StackPanel Margin="10">
-                    <TextBlock Text="Restore quarantined files from a manifest. Dry-run is the default." FontWeight="Bold" />
+                    <TextBlock Text="Restore files from a Dupl Storage manifest. Dry-run is the default." FontWeight="Bold" />
                     <Grid Margin="0,12,0,0">
                         <Grid.ColumnDefinitions>
                             <ColumnDefinition Width="Auto" />
@@ -178,12 +206,12 @@
                 </StackPanel>
             </TabItem>
 
-            <TabItem Header="Purge Quarantine">
+            <TabItem Header="Dupl Storage Dry-run / Purge Dupl Storage">
                 <StackPanel Margin="10">
-                    <TextBlock Text="Purge deletes only validated files already inside the DuplFinder quarantine session and listed in the manifest." FontWeight="Bold" TextWrapping="Wrap" />
+                    <TextBlock Text="Purge deletes only validated files already inside the Dupl Storage session and listed in the manifest. It does not delete original duplicate paths or KEEP paths." FontWeight="Bold" TextWrapping="Wrap" />
                     <StackPanel Orientation="Horizontal" Margin="0,12,0,0">
-                        <RadioButton x:Name="PurgeDryRunRadio" Content="Dry-run" IsChecked="True" Checked="OnControlsChanged" />
-                        <RadioButton x:Name="PurgeConfirmRadio" Content="Confirm purge" Margin="18,0,0,0" Checked="OnControlsChanged" />
+                        <RadioButton x:Name="PurgeDryRunRadio" Content="Dupl Storage dry-run" IsChecked="True" Checked="OnControlsChanged" />
+                        <RadioButton x:Name="PurgeConfirmRadio" Content="Confirm purge Dupl Storage" Margin="18,0,0,0" Checked="OnControlsChanged" />
                     </StackPanel>
                 </StackPanel>
             </TabItem>
@@ -223,11 +251,13 @@
                     <RowDefinition Height="Auto" />
                     <RowDefinition Height="Auto" />
                     <RowDefinition Height="Auto" />
+                    <RowDefinition Height="Auto" />
                 </Grid.RowDefinitions>
-                <TextBlock x:Name="ReadyTextBlock" Grid.Row="0" Foreground="#92400e" Margin="0,0,0,6" />
-                <TextBox x:Name="CommandPreviewTextBox" Grid.Row="1" FontFamily="Consolas" FontSize="13" IsReadOnly="True"
+                <TextBlock Grid.Row="0" Text="Ready / Command Preview" FontWeight="Bold" Margin="0,0,0,4" />
+                <TextBlock x:Name="ReadyTextBlock" Grid.Row="1" Foreground="#92400e" Margin="0,0,0,6" />
+                <TextBox x:Name="CommandPreviewTextBox" Grid.Row="2" FontFamily="Consolas" FontSize="13" IsReadOnly="True"
                          MinHeight="58" TextWrapping="Wrap" VerticalScrollBarVisibility="Auto" />
-                <StackPanel Grid.Row="2" Orientation="Horizontal" HorizontalAlignment="Right" Margin="0,8,0,0">
+                <StackPanel Grid.Row="3" Orientation="Horizontal" HorizontalAlignment="Right" Margin="0,8,0,0">
                     <Button x:Name="RunCommandButton" Content="Run" Width="110" Click="OnRunCommand" MouseEnter="OnRunButtonMouseEnter" Margin="0,0,8,0" />
                     <Button x:Name="CancelButton" Content="Cancel" Width="90" Click="OnCancelCommand" IsEnabled="False" Margin="0,0,8,0" />
                     <Button Content="Copy command" Width="120" Click="OnCopyCommand" Margin="0,0,8,0" />

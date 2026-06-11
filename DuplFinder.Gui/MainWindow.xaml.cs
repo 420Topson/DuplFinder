@@ -62,7 +62,7 @@ public partial class MainWindow : Window
         CliPathTextBox.Text = FindDefaultCliPath();
         DbPathTextBox.Text = Path.GetFullPath("duplicates.db");
         ReportPathTextBox.Text = Path.GetFullPath("prestage-report.html");
-        QuarantineFolderTextBox.Text = Path.GetFullPath("DuplFinder-Quarantine");
+        QuarantineFolderTextBox.Text = Path.GetFullPath("DuplFinder-Dupl-Storage");
         BuildFileTypeCheckboxes();
         RefreshDrives();
         AppendOutput("DuplFinder GUI MVP loaded. No command runs until you click Run.");
@@ -413,10 +413,10 @@ public partial class MainWindow : Window
         {
             var quarantineFolder = QuarantineFolderTextBox.Text.Trim();
             if (string.IsNullOrWhiteSpace(quarantineFolder))
-                return NotReady("Not ready: select quarantine folder");
+                return NotReady("Not ready: select Dupl Storage folder");
 
             return Ready(cliPath, ["apply-stage-plan", "--plan", planPath, "--quarantine", quarantineFolder], true,
-                "Quarantine mode moves selected STAGE files into a DuplFinder quarantine session.\nKEEP files are never moved or modified.\n\nContinue?");
+                "Dupl Storage mode moves selected STAGE files into a DuplFinder storage session.\nKEEP files are never moved or modified.\n\nContinue?");
         }
 
         return Ready(cliPath, ["apply-stage-plan", "--plan", planPath, "--dry-run"]);
@@ -426,11 +426,11 @@ public partial class MainWindow : Window
     {
         var manifestPath = ManifestPathTextBox.Text.Trim();
         if (!ExistingFile(manifestPath))
-            return NotReady("Not ready: select an existing quarantine manifest");
+            return NotReady("Not ready: select an existing Dupl Storage manifest");
 
         if (UndoRestoreRadio.IsChecked == true)
             return Ready(cliPath, ["undo-quarantine", "--manifest", manifestPath, "--restore"], true,
-                "Restore mode moves quarantined files back using the manifest and never overwrites existing originals.\n\nContinue?");
+                "Restore mode moves Dupl Storage files back using the manifest and never overwrites existing originals.\n\nContinue?");
 
         return Ready(cliPath, ["undo-quarantine", "--manifest", manifestPath, "--dry-run"]);
     }
@@ -439,11 +439,11 @@ public partial class MainWindow : Window
     {
         var manifestPath = ManifestPathTextBox.Text.Trim();
         if (!ExistingFile(manifestPath))
-            return NotReady("Not ready: select an existing quarantine manifest");
+            return NotReady("Not ready: select an existing Dupl Storage manifest");
 
         if (PurgeConfirmRadio.IsChecked == true)
             return Ready(cliPath, ["purge-quarantine", "--manifest", manifestPath, "--confirm-purge"], true,
-                "This permanently deletes validated files already inside the DuplFinder quarantine session.\nIt does not delete original duplicate paths or KEEP paths.\n\nContinue?");
+                "This permanently deletes validated files already inside the Dupl Storage session.\nIt does not delete original duplicate paths or KEEP paths.\n\nContinue?");
 
         return Ready(cliPath, ["purge-quarantine", "--manifest", manifestPath, "--dry-run"]);
     }
@@ -706,14 +706,14 @@ public partial class MainWindow : Window
 
     private void OnBrowseManifest(object sender, RoutedEventArgs e)
     {
-        var dialog = new Microsoft.Win32.OpenFileDialog { Filter = "Quarantine manifest (*.json)|*.json|All files (*.*)|*.*" };
+        var dialog = new Microsoft.Win32.OpenFileDialog { Filter = "Dupl Storage manifest (*.json)|*.json|All files (*.*)|*.*" };
         if (dialog.ShowDialog(this) == true)
             ManifestPathTextBox.Text = dialog.FileName;
     }
 
     private void OnBrowseQuarantineFolder(object sender, RoutedEventArgs e)
     {
-        using var dialog = new Forms.FolderBrowserDialog { Description = "Choose quarantine root folder", UseDescriptionForTitle = true };
+        using var dialog = new Forms.FolderBrowserDialog { Description = "Choose Dupl Storage folder", UseDescriptionForTitle = true };
         if (dialog.ShowDialog() == Forms.DialogResult.OK)
             QuarantineFolderTextBox.Text = dialog.SelectedPath;
     }
@@ -802,7 +802,7 @@ public partial class MainWindow : Window
             return "\"\"";
 
         return arg.Any(char.IsWhiteSpace) || arg.Contains('"')
-            ? "\"" + arg.Replace("\\", "\\\\", StringComparison.Ordinal).Replace("\"", "\\\"", StringComparison.Ordinal) + "\""
+            ? "\"" + arg.Replace("\"", "\\\"", StringComparison.Ordinal) + "\""
             : arg;
     }
 
