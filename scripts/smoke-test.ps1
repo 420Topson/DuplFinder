@@ -21,18 +21,23 @@ function Run-Checked {
     return $output
 }
 
-$baseTemp = if ($env:RUNNER_TEMP) { $env:RUNNER_TEMP } else { [IO.Path]::GetTempPath() }
-$root = Join-Path $baseTemp ("df-smoke-" + [Guid]::NewGuid().ToString('N'))
+$scriptRoot = Split-Path -Parent $PSCommandPath
+$repoRoot = Resolve-Path (Join-Path $scriptRoot '..')
+$baseTemp = if ($env:RUNNER_TEMP) { $env:RUNNER_TEMP } else { Join-Path $repoRoot '.codex-work' }
+New-Item -ItemType Directory -Force -Path $baseTemp | Out-Null
+$work = Join-Path $baseTemp ("df-smoke-" + [Guid]::NewGuid().ToString('N'))
+$root = Join-Path $work 'dataset'
+$output = Join-Path $work 'output'
 $sub = Join-Path $root 'sub'
-New-Item -ItemType Directory -Force -Path $sub | Out-Null
+New-Item -ItemType Directory -Force -Path $sub, $output | Out-Null
 
-$db = Join-Path $root 'smoke.db'
-$csv = Join-Path $root 'dups.csv'
-$report = Join-Path $root 'prestage-report.html'
-$profileHddDb = Join-Path $root 'profile-hdd.db'
-$profileSataSsdDb = Join-Path $root 'profile-sata-ssd.db'
-$profileNvmeDb = Join-Path $root 'profile-nvme.db'
-$profileNvmeOverrideDb = Join-Path $root 'profile-nvme-override.db'
+$db = Join-Path $output 'smoke.db'
+$csv = Join-Path $output 'dups.csv'
+$report = Join-Path $output 'prestage-report.html'
+$profileHddDb = Join-Path $output 'profile-hdd.db'
+$profileSataSsdDb = Join-Path $output 'profile-sata-ssd.db'
+$profileNvmeDb = Join-Path $output 'profile-nvme.db'
+$profileNvmeOverrideDb = Join-Path $output 'profile-nvme-override.db'
 
 # Two real duplicates.
 [IO.File]::WriteAllBytes((Join-Path $root 'a.txt'), [Text.Encoding]::UTF8.GetBytes('same-payload'))
@@ -101,6 +106,14 @@ if ($csvText -notmatch 'a\.txt' -or $csvText -notmatch 'b\.txt') {
     throw 'Smoke test failed: CSV does not contain both duplicate files.'
 }
 
+$scan2 = Run-Checked 'scan #2 cache check' {
+    dotnet run --project $ProjectPath -- scan $root --db $db --threads 2 --batch-size 2 --channel-capacity 5 --buffer-size 64KB --large-file-parallelism 1 --record-skipped
+}
+
+if ($scan2 -notmatch 'Hashed:\s+0') {
+    throw 'Smoke test failed: second scan should use cache and hash 0 files.'
+}
+
 $reportRun = Run-Checked 'prestage-report' {
     dotnet run --project $ProjectPath -- prestage-report --db $db --out $report
 }
@@ -132,14 +145,6 @@ if ($reportText -notmatch 'does not move or delete files') {
 }
 if ($reportText -notmatch '#0f1115' -and $reportText -notmatch '#171a21') {
     throw 'Smoke test failed: prestage report does not contain expected dark theme colors.'
-}
-
-$scan2 = Run-Checked 'scan #2 cache check' {
-    dotnet run --project $ProjectPath -- scan $root --db $db --threads 2 --batch-size 2 --channel-capacity 5 --buffer-size 64KB --large-file-parallelism 1 --record-skipped
-}
-
-if ($scan2 -notmatch 'Hashed:\s+0') {
-    throw 'Smoke test failed: second scan should use cache and hash 0 files.'
 }
 
 $stats = Run-Checked 'stats' {
