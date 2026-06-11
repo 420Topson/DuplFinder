@@ -1,9 +1,11 @@
 using System.Collections.ObjectModel;
+using System.ComponentModel;
 using System.Diagnostics;
 using System.IO;
 using System.Text;
 using System.Windows;
 using System.Windows.Controls;
+using System.Windows.Threading;
 using Microsoft.Win32;
 using Forms = System.Windows.Forms;
 
@@ -54,10 +56,22 @@ public partial class MainWindow : Window
     private bool _isRunning;
     private Process? _runningProcess;
     private CancellationTokenSource? _runCts;
+    private readonly DispatcherTimer _scanProgressTimer = new();
+    private DateTimeOffset _scanProgressStartedUtc;
+    private string _scanProgressTarget = "-";
+    private long _scanProgressFilesSeen;
+    private long _scanProgressFilesHashed;
+    private long _scanProgressFilesSkipped;
+    private long _scanProgressBytesHashed;
+    private Forms.NotifyIcon? _trayIcon;
+    private bool _closingFromTray;
 
     public MainWindow()
     {
         InitializeComponent();
+        _scanProgressTimer.Interval = TimeSpan.FromSeconds(1);
+        _scanProgressTimer.Tick += (_, _) => RefreshScanProgressDisplay();
+        InitializeTrayIcon();
         SelectedTargetsListBox.ItemsSource = _scanTargets;
         CliPathTextBox.Text = FindDefaultCliPath();
         DbPathTextBox.Text = Path.GetFullPath("duplicates.db");
@@ -337,6 +351,7 @@ public partial class MainWindow : Window
         if (string.IsNullOrWhiteSpace(cliPath))
         {
             return "[Scan]\nNot ready: select CLI executable path\n\n" +
+                "[Auto report after scan]\nNot ready: select CLI executable path\n\n" +
                 "[Duplicates]\nNot ready: select CLI executable path\n\n" +
                 "[Prestage Report]\nNot ready: select CLI executable path\n\n" +
                 "[Dupl Storage]\nMove to Dupl Storage:\n  Not ready: select CLI executable path\n\n" +
@@ -347,6 +362,7 @@ public partial class MainWindow : Window
 
         var preview = new StringBuilder();
         AppendWorkflowSection(preview, "Scan", BuildScanPlan(cliPath), MainTabs.SelectedIndex == 0);
+        AppendWorkflowSection(preview, "Auto report after scan", BuildAutoReportPlan(cliPath), MainTabs.SelectedIndex == 0);
         AppendWorkflowSection(preview, "Duplicates", BuildDuplicatesPlan(cliPath), MainTabs.SelectedIndex == 1);
         AppendWorkflowSection(preview, "Prestage Report", BuildPrestagePlan(cliPath), MainTabs.SelectedIndex == 2);
         AppendDuplStorageSection(preview, cliPath);
@@ -433,6 +449,29 @@ public partial class MainWindow : Window
                 ? ""
                 : "You selected one or more full drive roots.\n\nThis can scan a very large number of files and may take a long time.\nSystem or protected folders may be skipped due to permissions.\n\nSelected drive roots:\n" + string.Join(Environment.NewLine, driveRoots) + "\n\nContinue?"
         };
+    }
+
+    private CommandPlan BuildAutoReportPlan(string cliPath)
+    {
+        if (AutoReportAfterScanCheckBox.IsChecked != true)
+            return NotReady("Disabled");
+
+        var scanPlan = BuildScanPlan(cliPath);
+        if (!scanPlan.IsReady)
+            return NotReady(scanPlan.NotReadyReason);
+
+        var dbPath = DbPathTextBox.Text.Trim();
+        var reportPath = GetAutoReportPath(DateTimeOffset.Now);
+        if (string.IsNullOrWhiteSpace(dbPath))
+            return NotReady("Not ready: select database path");
+        if (string.IsNullOrWhiteSpace(reportPath))
+            return NotReady("Not ready: select HTML report output path");
+
+        var args = new List<string> { "prestage-report", "--db", dbPath, "--out", reportPath };
+        if (ReportForceCheckBox.IsChecked == true)
+            args.Add("--force");
+
+        return Ready(cliPath, args);
     }
 
     private CommandPlan BuildDuplicatesPlan(string cliPath)
@@ -636,28 +675,54 @@ public partial class MainWindow : Window
         _runCts = new CancellationTokenSource();
         UpdateCommandPreviewAndState();
 
+        var isScanPlan = IsScanPlan(plan);
+        var allSucceeded = false;
+        var commandFailed = false;
+        if (isScanPlan)
+            StartScanProgress();
+
         try
         {
             foreach (var invocation in plan.Invocations)
             {
+                if (IsScanInvocation(invocation))
+                    SetScanProgressTarget(GetScanTarget(invocation));
+
                 AppendOutput($"> {FormatPreview(invocation)}");
                 var exitCode = await RunProcessAsync(invocation, _runCts.Token);
                 AppendOutput($"Exit code: {exitCode}");
                 if (exitCode != 0)
                 {
+                    commandFailed = true;
                     AppendOutput("Stopping command batch after failure.");
+                    if (isScanPlan)
+                        StopScanProgress("Failed");
                     break;
                 }
 
                 ApplyPostRunState(invocation);
             }
+
+            allSucceeded = !commandFailed;
+            if (isScanPlan)
+            {
+                if (allSucceeded)
+                {
+                    StopScanProgress("Completed");
+                    await RunAutoReportAfterScanAsync(_runCts.Token);
+                }
+            }
         }
         catch (OperationCanceledException)
         {
+            if (isScanPlan)
+                StopScanProgress("Cancelled");
             AppendOutput("Command cancelled.");
         }
         finally
         {
+            if (isScanPlan && !allSucceeded && ScanProgressPanel.Visibility == Visibility.Visible)
+                StopScanProgress("Failed");
             _runningProcess = null;
             _runCts?.Dispose();
             _runCts = null;
@@ -674,6 +739,8 @@ public partial class MainWindow : Window
             UseShellExecute = false,
             RedirectStandardOutput = true,
             RedirectStandardError = true,
+            StandardOutputEncoding = Encoding.UTF8,
+            StandardErrorEncoding = Encoding.UTF8,
             CreateNoWindow = true
         };
 
@@ -684,7 +751,7 @@ public partial class MainWindow : Window
         process.OutputDataReceived += (_, e) =>
         {
             if (e.Data is not null)
-                Dispatcher.Invoke(() => AppendOutput(e.Data));
+                Dispatcher.Invoke(() => HandleProcessOutputLine(e.Data));
         };
         process.ErrorDataReceived += (_, e) =>
         {
@@ -713,6 +780,182 @@ public partial class MainWindow : Window
 
         await process.WaitForExitAsync(cancellationToken);
         return process.ExitCode;
+    }
+
+    private async Task RunAutoReportAfterScanAsync(CancellationToken cancellationToken)
+    {
+        if (AutoReportAfterScanCheckBox.IsChecked != true)
+            return;
+
+        var cliPath = CliPathTextBox.Text.Trim();
+        var dbPath = DbPathTextBox.Text.Trim();
+        if (string.IsNullOrWhiteSpace(cliPath) || string.IsNullOrWhiteSpace(dbPath) || _scanTargets.Count == 0)
+            return;
+        if (GetSelectedExtensions().Count == 0 && _extensionlessBox?.IsChecked != true)
+            return;
+
+        var reportPath = GetAutoReportPath(DateTimeOffset.Now);
+        if (string.IsNullOrWhiteSpace(reportPath))
+            return;
+
+        var reportFolder = Path.GetDirectoryName(reportPath);
+        if (!string.IsNullOrWhiteSpace(reportFolder))
+            Directory.CreateDirectory(reportFolder);
+
+        ReportPathTextBox.Text = reportPath;
+        var args = new List<string> { "prestage-report", "--db", dbPath, "--out", reportPath };
+        if (ReportForceCheckBox.IsChecked == true)
+            args.Add("--force");
+
+        var invocation = new CommandInvocation(cliPath, args);
+        AppendOutput("Scan completed successfully.");
+        AppendOutput("Generating HTML report...");
+        AppendOutput($"> {FormatPreview(invocation)}");
+        var exitCode = await RunProcessAsync(invocation, cancellationToken);
+        AppendOutput($"Exit code: {exitCode}");
+
+        if (exitCode == 0)
+        {
+            AppendOutput("HTML report generated:");
+            AppendOutput(reportPath);
+            if (OpenReportCheckBox.IsChecked == true)
+                OpenPath(reportPath);
+        }
+        else
+        {
+            AppendOutput("HTML report generation failed.");
+        }
+    }
+
+    private string GetAutoReportPath(DateTimeOffset now)
+    {
+        var selectedPath = ReportPathTextBox.Text.Trim();
+        if (string.IsNullOrWhiteSpace(selectedPath))
+        {
+            var dbPath = DbPathTextBox.Text.Trim();
+            var dbFolder = string.IsNullOrWhiteSpace(dbPath) ? "" : Path.GetDirectoryName(Path.GetFullPath(dbPath));
+            if (string.IsNullOrWhiteSpace(dbFolder))
+                dbFolder = Environment.CurrentDirectory;
+
+            return Path.Combine(dbFolder, $"prestage-report-{now:yyyyMMdd-HHmmss}.html");
+        }
+
+        var fullPath = Path.GetFullPath(selectedPath);
+        if (ReportForceCheckBox.IsChecked == true || !File.Exists(fullPath))
+            return fullPath;
+
+        var folder = Path.GetDirectoryName(fullPath);
+        if (string.IsNullOrWhiteSpace(folder))
+            folder = Environment.CurrentDirectory;
+
+        var name = Path.GetFileNameWithoutExtension(fullPath);
+        if (string.IsNullOrWhiteSpace(name))
+            name = "prestage-report";
+        var extension = Path.GetExtension(fullPath);
+        if (string.IsNullOrWhiteSpace(extension))
+            extension = ".html";
+
+        return Path.Combine(folder, $"{name}-{now:yyyyMMdd-HHmmss}{extension}");
+    }
+
+    private static bool IsScanPlan(CommandPlan plan) =>
+        plan.Invocations.Count > 0 && plan.Invocations.All(IsScanInvocation);
+
+    private static bool IsScanInvocation(CommandInvocation invocation) =>
+        invocation.Arguments.Count > 0 && string.Equals(invocation.Arguments[0], "scan", StringComparison.OrdinalIgnoreCase);
+
+    private static string GetScanTarget(CommandInvocation invocation) =>
+        invocation.Arguments.Count > 1 ? invocation.Arguments[1] : "-";
+
+    private void StartScanProgress()
+    {
+        _scanProgressStartedUtc = DateTimeOffset.Now;
+        _scanProgressTarget = "-";
+        _scanProgressFilesSeen = 0;
+        _scanProgressFilesHashed = 0;
+        _scanProgressFilesSkipped = 0;
+        _scanProgressBytesHashed = 0;
+
+        ScanProgressPanel.Visibility = Visibility.Visible;
+        ScanProgressStatusTextBlock.Text = "Scanning...";
+        ScanProgressBar.IsIndeterminate = true;
+        ScanProgressBar.Value = 0;
+        RefreshScanProgressDisplay();
+        _scanProgressTimer.Start();
+    }
+
+    private void SetScanProgressTarget(string target)
+    {
+        _scanProgressTarget = string.IsNullOrWhiteSpace(target) ? "-" : target;
+        RefreshScanProgressDisplay();
+    }
+
+    private void StopScanProgress(string status)
+    {
+        _scanProgressTimer.Stop();
+        ScanProgressPanel.Visibility = Visibility.Visible;
+        ScanProgressStatusTextBlock.Text = status;
+        ScanProgressBar.IsIndeterminate = false;
+        ScanProgressBar.Value = string.Equals(status, "Completed", StringComparison.OrdinalIgnoreCase) ? 100 : 0;
+        RefreshScanProgressDisplay();
+    }
+
+    private void RefreshScanProgressDisplay()
+    {
+        ScanProgressTargetTextBlock.Text = _scanProgressTarget;
+        ScanProgressElapsedTextBlock.Text = FormatElapsed(DateTimeOffset.Now - _scanProgressStartedUtc);
+        ScanProgressFilesSeenRun.Text = _scanProgressFilesSeen.ToString("N0", System.Globalization.CultureInfo.InvariantCulture);
+        ScanProgressFilesHashedRun.Text = _scanProgressFilesHashed.ToString("N0", System.Globalization.CultureInfo.InvariantCulture);
+        ScanProgressFilesSkippedRun.Text = _scanProgressFilesSkipped.ToString("N0", System.Globalization.CultureInfo.InvariantCulture);
+        ScanProgressBytesHashedRun.Text = FormatBytes(_scanProgressBytesHashed);
+    }
+
+    private void HandleProcessOutputLine(string line)
+    {
+        if (TryApplyScanProgress(line))
+            return;
+
+        AppendOutput(line);
+    }
+
+    private bool TryApplyScanProgress(string line)
+    {
+        const string prefix = "duplfinder.progress.scan ";
+        if (!line.StartsWith(prefix, StringComparison.Ordinal))
+            return false;
+
+        var values = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var token in line[prefix.Length..].Split(' ', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
+        {
+            var separator = token.IndexOf('=');
+            if (separator <= 0 || separator == token.Length - 1)
+                continue;
+
+            values[token[..separator]] = token[(separator + 1)..];
+        }
+
+        if (TryReadLong(values, "filesSeen", out var filesSeen))
+            _scanProgressFilesSeen = filesSeen;
+        if (TryReadLong(values, "hashed", out var hashed))
+            _scanProgressFilesHashed = hashed;
+        if (TryReadLong(values, "skipped", out var skipped))
+            _scanProgressFilesSkipped = skipped;
+        if (TryReadLong(values, "bytesHashed", out var bytesHashed))
+            _scanProgressBytesHashed = bytesHashed;
+
+        if (ScanProgressStatusTextBlock.Text is "Idle" or "Completed" or "Failed" or "Cancelled")
+            ScanProgressStatusTextBlock.Text = "Scanning...";
+
+        RefreshScanProgressDisplay();
+        return true;
+    }
+
+    private static bool TryReadLong(Dictionary<string, string> values, string key, out long value)
+    {
+        value = 0;
+        return values.TryGetValue(key, out var text) &&
+               long.TryParse(text, System.Globalization.NumberStyles.None, System.Globalization.CultureInfo.InvariantCulture, out value) &&
+               value >= 0;
     }
 
     private void ApplyPostRunState(CommandInvocation invocation)
@@ -843,6 +1086,117 @@ public partial class MainWindow : Window
             OpenPath(folder);
     }
 
+    protected override void OnStateChanged(EventArgs e)
+    {
+        base.OnStateChanged(e);
+
+        if (WindowState == WindowState.Minimized && MinimizeToTrayCheckBox.IsChecked == true)
+            MinimizeToTray();
+    }
+
+    protected override void OnClosing(CancelEventArgs e)
+    {
+        if (_isRunning && !ConfirmExitWhileRunning())
+        {
+            e.Cancel = true;
+            _closingFromTray = false;
+            return;
+        }
+
+        if (_isRunning)
+            _runCts?.Cancel();
+
+        base.OnClosing(e);
+    }
+
+    protected override void OnClosed(EventArgs e)
+    {
+        DisposeTrayIcon();
+        base.OnClosed(e);
+    }
+
+    private void InitializeTrayIcon()
+    {
+        var menu = new Forms.ContextMenuStrip();
+        menu.Items.Add("Open DuplFinder", null, (_, _) => RestoreFromTray());
+        menu.Items.Add("Show / Restore", null, (_, _) => RestoreFromTray());
+        menu.Items.Add(new Forms.ToolStripSeparator());
+        menu.Items.Add("Exit", null, (_, _) => ExitFromTray());
+
+        _trayIcon = new Forms.NotifyIcon
+        {
+            Text = "DuplFinder - duplicate file scanner",
+            Icon = LoadTrayIcon(),
+            ContextMenuStrip = menu,
+            Visible = false
+        };
+        _trayIcon.DoubleClick += (_, _) => RestoreFromTray();
+    }
+
+    private void MinimizeToTray()
+    {
+        Hide();
+        if (_trayIcon is not null)
+            _trayIcon.Visible = true;
+
+        AppendOutput("DuplFinder minimized to system tray.");
+        AppendOutput("Double-click the tray icon to restore.");
+    }
+
+    private void RestoreFromTray()
+    {
+        Show();
+        WindowState = WindowState.Normal;
+        Activate();
+        if (_trayIcon is not null)
+            _trayIcon.Visible = false;
+    }
+
+    private void ExitFromTray()
+    {
+        _closingFromTray = true;
+        Close();
+        if (IsVisible)
+            _closingFromTray = false;
+    }
+
+    private bool ConfirmExitWhileRunning()
+    {
+        var result = System.Windows.MessageBox.Show(
+            this,
+            "A DuplFinder command is currently running.\n\nExit will cancel the running command before closing.\n\nContinue?",
+            _closingFromTray ? "Exit DuplFinder from tray" : "Exit DuplFinder",
+            MessageBoxButton.YesNo,
+            MessageBoxImage.Warning);
+
+        return result == MessageBoxResult.Yes;
+    }
+
+    private static System.Drawing.Icon LoadTrayIcon()
+    {
+        try
+        {
+            var resource = System.Windows.Application.GetResourceStream(new Uri("pack://application:,,,/Assets/duplfinder.ico"));
+            if (resource is not null)
+                return new System.Drawing.Icon(resource.Stream);
+        }
+        catch (Exception ex) when (ex is IOException or InvalidOperationException or ArgumentException)
+        {
+        }
+
+        return System.Drawing.SystemIcons.Application;
+    }
+
+    private void DisposeTrayIcon()
+    {
+        if (_trayIcon is null)
+            return;
+
+        _trayIcon.Visible = false;
+        _trayIcon.Dispose();
+        _trayIcon = null;
+    }
+
     private static void OpenPath(string path)
     {
         if (string.IsNullOrWhiteSpace(path))
@@ -916,4 +1270,7 @@ public partial class MainWindow : Window
 
         return $"{value:0.#} {units[unit]}";
     }
+
+    private static string FormatElapsed(TimeSpan elapsed) =>
+        $"{(long)Math.Max(0, elapsed.TotalHours):00}:{elapsed.Minutes:00}:{elapsed.Seconds:00}";
 }

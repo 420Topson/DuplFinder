@@ -27,9 +27,6 @@ public sealed class ConsoleProgress
 
     public async Task RenderUntilCancelledAsync(ScanOptions options, CancellationToken ct)
     {
-        if (!_interactiveOutput)
-            return;
-
         while (!ct.IsCancellationRequested)
         {
             Render(options, final: false);
@@ -55,13 +52,35 @@ public sealed class ConsoleProgress
 
         if (final)
         {
-            Console.WriteLine(_interactiveOutput ? "\r" + PadForWindow(line) : line);
+            if (_interactiveOutput)
+                Console.WriteLine("\r" + PadForWindow(line));
+            else
+            {
+                Console.WriteLine(BuildMachineReadableLine(elapsed));
+                Console.WriteLine(line);
+            }
             return;
         }
 
         if (_interactiveOutput)
             Console.Write("\r" + PadForWindow(line));
+        else
+            Console.WriteLine(BuildMachineReadableLine(elapsed));
     }
+
+    private string BuildMachineReadableLine(double elapsedSeconds)
+    {
+        var elapsed = TimeSpan.FromSeconds(Math.Max(0, elapsedSeconds));
+        return "duplfinder.progress.scan " +
+               $"filesSeen={Interlocked.Read(ref _candidates)} " +
+               $"hashed={Interlocked.Read(ref _hashed)} " +
+               $"skipped={Interlocked.Read(ref _skipped)} " +
+               $"bytesHashed={Interlocked.Read(ref _bytesHashed)} " +
+               $"elapsed={FormatElapsed(elapsed)}";
+    }
+
+    private static string FormatElapsed(TimeSpan elapsed) =>
+        $"{(long)elapsed.TotalHours:00}:{elapsed.Minutes:00}:{elapsed.Seconds:00}";
 
     private static string PadForWindow(string line)
     {
