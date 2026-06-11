@@ -71,8 +71,12 @@ public sealed class ConsoleProgress
     private string BuildMachineReadableLine(double elapsedSeconds)
     {
         var elapsed = TimeSpan.FromSeconds(Math.Max(0, elapsedSeconds));
+        var filesSeen = Interlocked.Read(ref _candidates) +
+                        Interlocked.Read(ref _skipped) +
+                        Interlocked.Read(ref _errors);
+
         return "duplfinder.progress.scan " +
-               $"filesSeen={Interlocked.Read(ref _candidates)} " +
+               $"filesSeen={filesSeen} " +
                $"hashed={Interlocked.Read(ref _hashed)} " +
                $"skipped={Interlocked.Read(ref _skipped)} " +
                $"bytesHashed={Interlocked.Read(ref _bytesHashed)} " +
